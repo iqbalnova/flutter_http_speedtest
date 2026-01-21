@@ -29,7 +29,10 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  flutter_http_speedtest: ^1.0.0
+  flutter_http_speedtest:
+    git:
+      url: https://github.com/iqbalnova/flutter_http_speedtest.git
+      ref: 0.0.1
 ```
 
 Or install it from the command line:
