@@ -409,50 +409,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 **Made with ❤️ by the Flutter community**';
 
-## Implementation Details
-
-### Streaming Architecture
-
-- Uses `dart:io` HttpClient with streaming reads
-- No large buffers in memory
-- Incremental speed calculation
-- Real-time chart sampling
-
-### Latency Measurement
-
-- HTTP RTT to lightweight endpoints
-- Multiple samples for statistical accuracy
-- Median for latency, mean absolute delta for jitter
-- Failed requests counted as packet loss
-
-### Loaded Latency (Bufferbloat)
-
-- Background RTT probes during download
-- Indicates network congestion under load
-- Useful for gaming and real-time applications
-
-### Cloudflare Endpoints
-
-- Download: `https://speed.cloudflare.com/__down?bytes={N}`
-- Upload: `https://speed.cloudflare.com/__up`
-- Metadata: `https://speed.cloudflare.com/cdn-cgi/trace`
-
-## Best Practices
-
-1. **Use appropriate download/upload sizes** for network conditions
-2. **Implement UI feedback** during long tests
-3. **Handle partial results** gracefully
-4. **Provide cancel option** for user experience
-5. **Show phase progress** to keep users informed
-6. **Persist results** for debugging (optional)
-
-## Limitations
-
-- Depends on Cloudflare infrastructure availability
-- No fallback servers (can be added in future versions)
-- Network metadata limited to Cloudflare trace endpoint
-- ISP/ASN data not always available
-
 ## License
 
 MIT License - see LICENSE file for details
