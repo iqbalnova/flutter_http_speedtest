@@ -28,8 +28,9 @@ class NetworkMetadata {
     final buffer = StringBuffer('NetworkMetadata(\n');
     if (ipAddress != null) buffer.writeln('  IP: $ipAddress');
     if (connectedVia != null) buffer.writeln('  Connected via: $connectedVia');
-    if (serverLocation != null)
+    if (serverLocation != null) {
       buffer.writeln('  Server location: $serverLocation');
+    }
     if (networkName != null) buffer.writeln('  Network: $networkName');
     if (asn != null) buffer.writeln('  ASN: $asn');
     if (country != null) buffer.writeln('  Country: $country');

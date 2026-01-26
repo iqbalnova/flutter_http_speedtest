@@ -1,11 +1,11 @@
 name: flutter_http_speedtest
-description: "A new Flutter plugin project."
-version: 0.0.1
+description: "Flutter plugin for running speed tests against a server."
+version: 0.0.2
 homepage:
 
 environment:
   sdk: ^3.10.4
-  flutter: '>=3.3.0'
+  flutter: ">=3.3.0"
 
 dependencies:
   flutter:

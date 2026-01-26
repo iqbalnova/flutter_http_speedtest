@@ -8,3 +8,4 @@ export 'src/models/network_quality.dart';
 export 'src/models/phase_status.dart';
 export 'src/models/sample.dart';
 export 'src/models/enums.dart';
+export 'src/models/exceptions.dart';

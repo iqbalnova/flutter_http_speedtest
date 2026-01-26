@@ -19,9 +19,9 @@ A production-ready Flutter package for comprehensive Internet speed testing and 
 
 ## Screenshots
 
-| Running Test                 | Results Summary              | Quality Grades               |
-| ---------------------------- | ---------------------------- | ---------------------------- |
-| ![Running](docs/running.png) | ![Results](docs/results.png) | ![Quality](docs/quality.png) |
+| Running Test                 | Results Summary               | Quality Grades               |
+| ---------------------------- | ----------------------------- | ---------------------------- |
+| ![Running](docs/running.png) | ![Results](docs/results.jpeg) | ![Quality](docs/quality.png) |
 
 ## Installation
 
@@ -32,7 +32,7 @@ dependencies:
   flutter_http_speedtest:
     git:
       url: https://github.com/iqbalnova/flutter_http_speedtest.git
-      ref: 0.0.1
+      ref: 0.0.2
 ```
 
 Or install it from the command line:
@@ -114,7 +114,7 @@ tester.cancel();
 
 ## Complete Example
 
-See the [example](example/main.dart) directory for a full Flutter app with:
+See the [example](example/lib/main.dart) directory for a full Flutter app with:
 
 - Live speed charts during testing
 - Real-time phase indicators
@@ -171,7 +171,8 @@ flutter_http_speedtest/
 │   │   ├── network_quality.dart
 │   │   ├── phase_status.dart
 │   │   ├── sample.dart
-│   │   └── enums.dart
+│   │   ├── enums.dart
+|   |   └── exceptions.dart
 │   └── services/                    # Service layer
 │       ├── tcp_ping_service.dart    # TCP socket-based latency
 │       ├── latency_service.dart     # HTTP-based latency (alternative)
@@ -192,110 +193,6 @@ The engine runs four sequential phases:
 4. **Upload** (5-15s) - Measure upload throughput
 
 Each phase can succeed, fail, timeout, or be canceled independently, with the engine returning partial results.
-
-## API Reference
-
-### SpeedTestEngine
-
-Main class for running speed tests.
-
-#### Constructor
-
-```dart
-SpeedTestEngine({
-  required int downloadBytes,           // Bytes to download (e.g., 10MB)
-  required int uploadBytes,             // Bytes to upload (e.g., 5MB)
-  SpeedTestOptions options,             // Configuration options
-  void Function(TestPhase)? onPhaseChanged,
-  void Function(Sample)? onSample,
-  void Function(SpeedTestResult)? onCompleted,
-  void Function(Object, StackTrace)? onError,
-})
-```
-
-#### Methods
-
-```dart
-// Run the complete speed test
-Future<SpeedTestResult> run()
-
-// Cancel the current test
-void cancel()
-```
-
-### SpeedTestOptions
-
-Configuration options for the speed test.
-
-```dart
-class SpeedTestOptions {
-  final int pingSamples;                    // Default: 15
-  final Duration sampleInterval;            // Default: 250ms
-  final Duration pingTimeout;               // Default: 4s
-  final Duration downloadTimeout;           // Default: 10s
-  final Duration uploadTimeout;             // Default: 10s
-  final Duration maxTotalDuration;          // Default: 25s
-  final int retries;                        // Default: 1
-  final int loadedLatencySamples;          // Default: 5
-}
-```
-
-### SpeedTestResult
-
-Complete test results with all metrics.
-
-```dart
-class SpeedTestResult {
-  final double? downloadMbps;              // Download speed in Mbps
-  final double? uploadMbps;                // Upload speed in Mbps
-  final double? latencyMs;                 // Median latency in ms
-  final double? jitterMs;                  // Average jitter in ms
-  final double? packetLossPercent;         // Packet loss percentage
-  final double? loadedLatencyMs;           // Latency under load in ms
-  final NetworkMetadata? metadata;         // Connection metadata
-  final List<SpeedSample> downloadSeries;  // Time-series for charts
-  final List<SpeedSample> uploadSeries;    // Time-series for charts
-  final List<LatencySample> latencySeries; // Time-series for charts
-  final NetworkQuality quality;            // Quality scores
-  final Map<TestPhase, PhaseStatus> phaseStatuses; // Status per phase
-}
-```
-
-### NetworkQuality
-
-Scenario-specific quality assessments.
-
-```dart
-class NetworkQuality {
-  final ScenarioQuality streaming;  // Video streaming quality
-  final ScenarioQuality gaming;     // Online gaming quality
-  final ScenarioQuality rtc;        // Video chatting quality
-}
-
-class ScenarioQuality {
-  final double score;               // 0-100
-  final NetworkQualityGrade grade;  // bad, poor, average, good, great
-  final String scenario;
-}
-```
-
-### NetworkMetadata
-
-Network connection information.
-
-```dart
-class NetworkMetadata {
-  final String? ipAddress;        // Public IP address
-  final String? connectedVia;     // 'IPv4' or 'IPv6'
-  final String? serverLocation;   // Server city or colo code
-  final String? networkName;      // ISP name (if available)
-  final String? asn;             // Autonomous System Number
-  final String? country;         // Country code
-  final String? tlsVersion;      // TLS version (e.g., 'TLSv1.3')
-  final String? httpVersion;     // HTTP version (e.g., 'h2')
-  final String? colo;            // Cloudflare colo code
-}
-```
 
 ## Quality Scoring System
 
@@ -381,130 +278,6 @@ The package uses **TCP socket-based ping** for accurate latency measurement:
 - **Packet Loss**: Percentage of failed/timed-out samples
 - **Loaded Latency**: Median RTT during download (bufferbloat indicator)
 
-## Timeout & Error Handling
-
-### Production-Ready Safety
-
-The package implements comprehensive timeout and error handling:
-
-```dart
-// Per-phase timeouts
-pingTimeout: Duration(seconds: 4)
-downloadTimeout: Duration(seconds: 10)
-uploadTimeout: Duration(seconds: 10)
-
-// Global maximum duration
-maxTotalDuration: Duration(seconds: 25)
-
-// Retry logic
-retries: 1  // 0 = no retries, 1 = one retry per phase
-```
-
-### Graceful Failures
-
-If a phase fails, the engine continues and returns partial results:
-
-```dart
-final result = await tester.run();
-
-// Check individual phase status
-if (result.phaseStatuses[TestPhase.download]?.isSuccess ?? false) {
-  print('Download: ${result.downloadMbps} Mbps');
-} else if (result.phaseStatuses[TestPhase.download]?.isTimeout ?? false) {
-  print('Download timed out');
-} else if (result.phaseStatuses[TestPhase.download]?.isCanceled ?? false) {
-  print('Download canceled by user');
-} else {
-  print('Download failed: ${result.phaseStatuses[TestPhase.download]?.errorMessage}');
-}
-```
-
-### Cancellation
-
-Users can cancel tests at any time:
-
-```dart
-final tester = SpeedTestEngine(...);
-final testFuture = tester.run();
-
-// User clicks cancel button
-tester.cancel();
-
-// Wait for clean cancellation
-final result = await testFuture;
-print('Partial results: ${result.downloadMbps} Mbps');
-```
-
-## Chart Integration
-
-The package provides time-series data compatible with popular chart libraries:
-
-### fl_chart
-
-```dart
-import 'package:fl_chart/fl_chart.dart';
-
-LineChart(
-  LineChartData(
-    lineBarsData: [
-      LineChartBarData(
-        spots: result.downloadSeries
-            .map((s) => FlSpot(
-                  s.timestampMs.toDouble(),
-                  s.mbps,
-                ))
-            .toList(),
-        isCurved: true,
-        color: Colors.blue,
-        barWidth: 3,
-      ),
-    ],
-  ),
-)
-```
-
-### syncfusion_flutter_charts
-
-```dart
-import 'package:syncfusion_flutter_charts/charts.dart';
-
-SfCartesianChart(
-  series: <LineSeries<SpeedSample, int>>[
-    LineSeries<SpeedSample, int>(
-      dataSource: result.downloadSeries,
-      xValueMapper: (SpeedSample sample, _) => sample.timestampMs,
-      yValueMapper: (SpeedSample sample, _) => sample.mbps,
-      color: Colors.blue,
-    ),
-  ],
-)
-```
-
-### Custom Painter (Included in Example)
-
-The example app includes a simple CustomPainter for lightweight charts:
-
-```dart
-class ChartPainter extends CustomPainter {
-  final List<SpeedSample> samples;
-  final double maxSpeed;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Draw line chart
-    final path = Path();
-    for (int i = 0; i < samples.length; i++) {
-      final x = (samples[i].timestampMs / maxTime) * size.width;
-      final y = size.height - (samples[i].mbps / maxSpeed) * size.height;
-      if (i == 0) path.moveTo(x, y);
-      else path.lineTo(x, y);
-    }
-    canvas.drawPath(path, paint);
-  }
-}
-```
-
 ## Cloudflare Endpoints
 
 The package uses official Cloudflare speed test endpoints:
@@ -563,102 +336,6 @@ final downloadBytes = speedMbps < 5
 | Linux    | ✅ Fully Supported | Any                        |
 
 **Pure Dart** - No platform-specific code or native dependencies required.
-
-## Best Practices
-
-### 1. Handle Errors Gracefully
-
-```dart
-try {
-  final result = await tester.run();
-  // Use result
-} catch (e) {
-  // Show user-friendly error
-  print('Speed test failed: $e');
-}
-```
-
-### 2. Show Progress to Users
-
-```dart
-onPhaseChanged: (phase) {
-  // Update UI with current phase
-  showStatus(_getPhaseText(phase));
-},
-onSample: (sample) {
-  // Update live chart
-  updateChart(sample);
-},
-```
-
-### 3. Provide Cancel Option
-
-```dart
-// Always allow users to cancel
-ElevatedButton(
-  onPressed: () => tester.cancel(),
-  child: Text('Cancel Test'),
-)
-```
-
-### 4. Set Appropriate Timeouts
-
-```dart
-// Adjust for expected network conditions
-SpeedTestOptions(
-  downloadTimeout: Duration(seconds: isSlowNetwork ? 20 : 10),
-  uploadTimeout: Duration(seconds: isSlowNetwork ? 20 : 10),
-)
-```
-
-### 5. Persist Results (Optional)
-
-```dart
-// Save results for debugging
-final prefs = await SharedPreferences.getInstance();
-await prefs.setString('last_test', jsonEncode(result.toJson()));
-```
-
-## Troubleshooting
-
-### Upload Speed Drops at End
-
-**Symptom:** Upload speed shows 30 Mbps → 25 Mbps → 16 Mbps
-
-**Cause:** Timer includes server acknowledgment wait time
-
-**Solution:** Use the updated `upload_service.dart` which stops the timer before `request.close()`
-
-### Latency Much Higher Than Cloudflare Website
-
-**Symptom:** App shows 300ms, website shows 20ms
-
-**Cause:** Using HTTP ping instead of TCP socket ping
-
-**Solution:** The package now uses TCP socket ping by default (v1.0.0+)
-
-### Charts Not Updating
-
-**Symptom:** No samples appear during upload
-
-**Cause:** No event loop yielding in tight upload loop
-
-**Solution:** Updated service includes `await Future.delayed(Duration.zero)` after each sample
-
-### Test Hangs Indefinitely
-
-**Symptom:** Test never completes
-
-**Cause:** Missing or incorrect timeout configuration
-
-**Solution:**
-
-```dart
-SpeedTestOptions(
-  maxTotalDuration: Duration(seconds: 30),  // Global timeout
-  downloadTimeout: Duration(seconds: 15),    // Per-phase timeout
-)
-```
 
 ## FAQ
 
@@ -722,7 +399,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - 📫 Issues: [GitHub Issues](https://github.com/yourusername/flutter_http_speedtest/issues)
 - 💬 Discussions: [GitHub Discussions](https://github.com/yourusername/flutter_http_speedtest/discussions)
-- 📧 Email: your.email@example.com
+- 📧 Email: iqbalnova707@gmail.com
 
 ## Changelog
 
@@ -731,47 +408,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 ---
 
 **Made with ❤️ by the Flutter community**';
-
-LineChart(
-LineChartData(
-lineBarsData: [
-LineChartBarData(
-spots: result.downloadSeries
-.map((s) => FlSpot(s.timestampMs.toDouble(), s.mbps))
-.toList(),
-),
-],
-),
-)
-
-````
-
-### syncfusion_flutter_charts Example
-
-```dart
-import 'package:syncfusion_flutter_charts/charts.dart';
-
-SfCartesianChart(
-  series: <LineSeries<SpeedSample, int>>[
-    LineSeries<SpeedSample, int>(
-      dataSource: result.downloadSeries,
-      xValueMapper: (sample, _) => sample.timestampMs,
-      yValueMapper: (sample, _) => sample.mbps,
-    ),
-  ],
-)
-````
-
-## Platform Support
-
-| Platform | Supported |
-| -------- | --------- |
-| Android  | ✅        |
-| iOS      | ✅        |
-| Web      | ✅        |
-| macOS    | ✅        |
-| Windows  | ✅        |
-| Linux    | ✅        |
 
 ## Implementation Details
 
@@ -824,14 +460,3 @@ MIT License - see LICENSE file for details
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
-
-## Changelog
-
-### 1.0.0
-
-- Initial release
-- Full speed test implementation
-- Network quality scoring
-- Metadata fetching
-- Real-time charting support
-- Comprehensive timeout and error handling
