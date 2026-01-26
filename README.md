@@ -19,9 +19,9 @@ A production-ready Flutter package for comprehensive Internet speed testing and 
 
 ## Screenshots
 
-| Running Test                 | Results Summary               | Quality Grades               |
-| ---------------------------- | ----------------------------- | ---------------------------- |
-| ![Running](docs/running.png) | ![Results](docs/results.jpeg) | ![Quality](docs/quality.png) |
+| Running Test                  | Results Summary               |
+| ----------------------------- | ----------------------------- |
+| ![Running](docs/results.jpeg) | ![Results](docs/summary.jpeg) |
 
 ## Installation
 
