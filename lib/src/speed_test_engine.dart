@@ -3,8 +3,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter_http_speedtest/src/services/tcp_ping_service.dart';
-
 import 'models/speed_test_result.dart';
 import 'models/speed_test_options.dart';
 import 'models/metadata.dart';
@@ -14,6 +12,7 @@ import 'models/enums.dart';
 import 'models/exceptions.dart';
 import 'services/latency_service.dart';
 import 'services/download_service.dart';
+import 'services/tcp_ping_service.dart';
 import 'services/upload_service.dart';
 import 'services/metadata_service.dart';
 import 'services/quality_scorer.dart';
@@ -112,7 +111,7 @@ class SpeedTestEngine {
   }
 
   Future<SpeedTestResult> _runTest() async {
-    final latencyService = TcpPingService(options);
+    final latencyService = LatencyService(options);
     final downloadService = DownloadService(options);
     final uploadService = UploadService(options);
     final metadataService = MetadataService(options);

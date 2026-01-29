@@ -2,6 +2,8 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'package:dart_ping/dart_ping.dart';
+import 'package:dart_ping_ios/dart_ping_ios.dart';
 import '../models/speed_test_options.dart';
 import '../models/sample.dart';
 
@@ -18,58 +20,71 @@ class LatencyResult {
 }
 
 class LatencyService {
-  static const String _endpoint = 'speed.cloudflare.com';
+  static const String _defaultHost = '1.1.1.1'; // Cloudflare DNS
   final SpeedTestOptions options;
+  final String targetHost;
+  bool _isInitialized = false;
 
-  LatencyService(this.options);
+  LatencyService(this.options, {this.targetHost = _defaultHost});
+
+  /// Initialize platform-specific ping support
+  Future<void> _initialize() async {
+    if (_isInitialized) return;
+
+    if (Platform.isIOS) {
+      try {
+        DartPingIOS.register();
+        _isInitialized = true;
+      } catch (e) {
+        // iOS ping registration failed, but continue
+        _isInitialized = true;
+      }
+    } else {
+      _isInitialized = true;
+    }
+  }
 
   Future<LatencyResult> measureLatency({
     void Function(LatencySample sample)? onSample,
     Future<void>? cancelToken,
   }) async {
+    await _initialize();
+
     final samples = <double>[];
     final startTime = DateTime.now();
     int failedSamples = 0;
 
-    // Create a single persistent HTTP client with keep-alive
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 2);
-    client.idleTimeout = const Duration(seconds: 30);
-
+    // Warmup: discard first sample to establish connection
     try {
-      // Warmup: establish connection and discard first sample
+      await _measureSinglePing();
+      await Future.delayed(const Duration(milliseconds: 100));
+    } catch (e) {
+      // Warmup failure is acceptable
+    }
+
+    for (int i = 0; i < options.pingSamples; i++) {
+      if (cancelToken != null) {
+        final race = await Future.any([
+          Future.value(false),
+          cancelToken.then((_) => true),
+        ]);
+        if (race) throw Exception('Canceled');
+      }
+
       try {
-        await _measureSingleRttWithClient(client);
-        await Future.delayed(const Duration(milliseconds: 100));
+        final rtt = await _measureSinglePing();
+        samples.add(rtt);
+
+        final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+        onSample?.call(LatencySample(timestampMs: elapsed, rttMs: rtt));
       } catch (e) {
-        // Warmup failure is acceptable
+        failedSamples++;
       }
 
-      for (int i = 0; i < options.pingSamples; i++) {
-        if (cancelToken != null) {
-          final race = await Future.any([
-            Future.value(false),
-            cancelToken.then((_) => true),
-          ]);
-          if (race) throw Exception('Canceled');
-        }
-
-        try {
-          final rtt = await _measureSingleRttWithClient(client);
-          samples.add(rtt);
-
-          final elapsed = DateTime.now().difference(startTime).inMilliseconds;
-          onSample?.call(LatencySample(timestampMs: elapsed, rttMs: rtt));
-        } catch (e) {
-          failedSamples++;
-        }
-
-        if (i < options.pingSamples - 1) {
-          await Future.delayed(const Duration(milliseconds: 100));
-        }
+      // Small delay between pings
+      if (i < options.pingSamples - 1) {
+        await Future.delayed(const Duration(milliseconds: 100));
       }
-    } finally {
-      client.close(force: false); // Allow graceful connection close
     }
 
     if (samples.isEmpty) {
@@ -88,33 +103,69 @@ class LatencyService {
     );
   }
 
-  /// Measure RTT using persistent HTTP client (reuses connection)
-  Future<double> _measureSingleRttWithClient(HttpClient client) async {
-    final stopwatch = Stopwatch()..start();
+  /// Measure single ping using ICMP
+  Future<double> _measureSinglePing() async {
+    final completer = Completer<double>();
+    bool hasResponse = false;
+
+    final ping = Ping(
+      targetHost,
+      count: 1,
+      timeout: 2, // 2 second timeout
+      interval: 1,
+    );
+
+    final timeoutTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (!completer.isCompleted) {
+        completer.completeError(Exception('Ping timeout'));
+      }
+    });
+
+    StreamSubscription? subscription;
+
+    subscription = ping.stream.listen(
+      (event) {
+        if (event.response != null && event.response!.time != null) {
+          final latency = event.response!.time!.inMicroseconds / 1000.0;
+
+          if (latency > 0 && latency < 2000 && !hasResponse) {
+            hasResponse = true;
+            timeoutTimer.cancel();
+            subscription?.cancel();
+
+            if (!completer.isCompleted) {
+              completer.complete(latency);
+            }
+          }
+        } else if (event.error != null) {
+          if (!hasResponse && !completer.isCompleted) {
+            timeoutTimer.cancel();
+            subscription?.cancel();
+            completer.completeError(Exception('Ping error: ${event.error}'));
+          }
+        }
+      },
+      onDone: () {
+        if (!hasResponse && !completer.isCompleted) {
+          timeoutTimer.cancel();
+          completer.completeError(Exception('Ping completed without response'));
+        }
+      },
+      onError: (e) {
+        if (!completer.isCompleted) {
+          timeoutTimer.cancel();
+          subscription?.cancel();
+          completer.completeError(e);
+        }
+      },
+      cancelOnError: true,
+    );
 
     try {
-      // Use smallest possible request - HEAD method
-      final request = await client
-          .openUrl('HEAD', Uri.https(_endpoint, '/cdn-cgi/trace'))
-          .timeout(const Duration(milliseconds: 1500));
-
-      // request.headers.set('User-Agent', 'flutter_http_speedtest/1.0');
-      // request.headers.set('Connection', 'keep-alive');
-      request.contentLength = 0;
-
-      final response = await request.close().timeout(
-        const Duration(milliseconds: 1500),
-      );
-
-      // Just read status, don't drain body for HEAD request
-      final _ = response.statusCode;
-      await response.drain().timeout(const Duration(milliseconds: 500));
-
-      stopwatch.stop();
-      return stopwatch.elapsedMicroseconds / 1000.0;
-    } catch (e) {
-      stopwatch.stop();
-      rethrow;
+      return await completer.future;
+    } finally {
+      timeoutTimer.cancel();
+      subscription.cancel();
     }
   }
 
@@ -169,32 +220,27 @@ class LatencyService {
 
   /// Measure loaded latency during download/upload
   Future<double?> measureLoadedLatency({Future<void>? cancelToken}) async {
+    await _initialize();
+
     final samples = <double>[];
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 2);
-    client.idleTimeout = const Duration(seconds: 10);
 
-    try {
-      for (int i = 0; i < options.loadedLatencySamples; i++) {
-        if (cancelToken != null) {
-          final race = await Future.any([
-            Future.value(false),
-            cancelToken.then((_) => true),
-          ]);
-          if (race) return null;
-        }
-
-        try {
-          final rtt = await _measureSingleRttWithClient(client);
-          samples.add(rtt);
-        } catch (e) {
-          // Ignore failures under load
-        }
-
-        await Future.delayed(const Duration(milliseconds: 150));
+    for (int i = 0; i < options.loadedLatencySamples; i++) {
+      if (cancelToken != null) {
+        final race = await Future.any([
+          Future.value(false),
+          cancelToken.then((_) => true),
+        ]);
+        if (race) return null;
       }
-    } finally {
-      client.close(force: false);
+
+      try {
+        final rtt = await _measureSinglePing();
+        samples.add(rtt);
+      } catch (e) {
+        // Ignore failures under load
+      }
+
+      await Future.delayed(const Duration(milliseconds: 150));
     }
 
     if (samples.isEmpty) return null;

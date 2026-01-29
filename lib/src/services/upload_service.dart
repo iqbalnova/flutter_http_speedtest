@@ -1,7 +1,4 @@
-// lib/src/services/upload_service_v2.dart
-//
-// IMPROVED VERSION: Guarantees upload samples are visible
-// Replace your existing upload_service.dart with this
+// lib/src/services/upload_service.dart
 
 import 'dart:async';
 import 'dart:io';
@@ -24,12 +21,12 @@ class UploadService {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 5);
 
+    // 🔥 Store all samples for final calculation (same as download)
+    final List<SpeedSample> samples = [];
+
     try {
       final uri = Uri.https(_endpoint, '/__up');
       final request = await client.postUrl(uri).timeout(options.uploadTimeout);
-      // request.headers.set('User-Agent', 'flutter_http_speedtest/1.0');
-      // request.headers.set('Content-Length', bytes.toString());
-      // request.headers.contentType = ContentType('application', 'octet-stream');
 
       final stopwatch = Stopwatch()..start();
 
@@ -80,7 +77,12 @@ class UploadService {
 
           // Only send meaningful samples (avoid division by zero or extreme values)
           if (mbps > 0 && mbps < 10000) {
-            onSample?.call(SpeedSample(timestampMs: elapsed, mbps: mbps));
+            final sample = SpeedSample(timestampMs: elapsed, mbps: mbps);
+
+            // 🔥 Store sample for final calculation
+            samples.add(sample);
+
+            onSample?.call(sample);
             samplesSent++;
 
             lastSampleBytes = sentBytes;
@@ -98,16 +100,11 @@ class UploadService {
 
       stopwatch.stop();
 
-      // Send final sample to show completion
-      final totalSeconds = math.max(
-        0.001,
-        stopwatch.elapsedMilliseconds / 1000.0,
-      );
-      final finalMbps = (sentBytes * 8) / (totalSeconds * 1000000);
+      // 🔥 CALCULATE FINAL SPEED USING SAME ALGORITHM AS DOWNLOAD
+      final finalMbps = _calculateFinalMbps(samples);
 
-      // Always send at least one final sample
-      if (samplesSent == 0 ||
-          stopwatch.elapsedMilliseconds - lastSampleTime > 100) {
+      // Send final sample to show completion (using calculated final speed)
+      if (finalMbps > 0) {
         onSample?.call(
           SpeedSample(
             timestampMs: stopwatch.elapsedMilliseconds,
@@ -120,5 +117,54 @@ class UploadService {
     } finally {
       client.close();
     }
+  }
+
+  /// ============================
+  /// FINAL SPEED AGGREGATION LOGIC
+  /// (Identical to DownloadService)
+  /// ============================
+
+  double _calculateFinalMbps(List<SpeedSample> samples) {
+    if (samples.isEmpty) {
+      // Fallback: no samples collected
+      return 0.0;
+    }
+
+    // If we have very few samples, just return the average
+    if (samples.length < 3) {
+      final avg =
+          samples.map((e) => e.mbps).reduce((a, b) => a + b) / samples.length;
+      return avg;
+    }
+
+    // 🔹 1. Buang warm-up awal (30%)
+    final startIndex = (samples.length * 0.3).round();
+    final stableSamples = samples.length > startIndex
+        ? samples.sublist(startIndex)
+        : samples;
+
+    if (stableSamples.isEmpty) {
+      return samples.last.mbps;
+    }
+
+    // 🔹 2. Ambil nilai Mbps saja
+    final values = stableSamples.map((e) => e.mbps).toList();
+
+    // Sort ascending
+    values.sort();
+
+    // 🔹 3. Ambil percentile 90 sebagai peak reference
+    final p90Index = (values.length * 0.9).round().clamp(0, values.length - 1);
+    final p90 = values[p90Index];
+
+    // 🔹 4. Clamp spike ekstrem (anti burst buffer)
+    final filtered = values.where((v) => v <= p90 * 1.2).toList();
+
+    final used = filtered.isNotEmpty ? filtered : values;
+
+    // 🔹 5. Average stable window
+    final avg = used.reduce((a, b) => a + b) / used.length;
+
+    return avg;
   }
 }
