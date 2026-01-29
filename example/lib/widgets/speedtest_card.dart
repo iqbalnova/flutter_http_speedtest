@@ -3,30 +3,31 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_http_speedtest/flutter_http_speedtest.dart';
 
 class SpeedTestCard extends StatelessWidget {
-  final TestPhase? phase;
-  final bool isRunning;
-  final SpeedTestResult? result;
-
-  final List<SpeedSample> downloadSamples;
-  final List<SpeedSample> uploadSamples;
-  final List<LatencySample> latencySamples;
+  final ValueNotifier<TestPhase?> phaseNotifier;
+  final ValueNotifier<bool> isRunningNotifier;
+  final ValueNotifier<SpeedTestResult?> resultNotifier;
+  final ValueNotifier<List<SpeedSample>> downloadSamplesNotifier;
+  final ValueNotifier<List<SpeedSample>> uploadSamplesNotifier;
+  final ValueNotifier<List<LatencySample>> latencySamplesNotifier;
 
   final VoidCallback onStart;
   final VoidCallback onCancel;
+  final VoidCallback onTapResult;
 
   const SpeedTestCard({
     super.key,
-    required this.phase,
-    required this.isRunning,
-    required this.result,
-    required this.downloadSamples,
-    required this.uploadSamples,
-    required this.latencySamples,
+    required this.phaseNotifier,
+    required this.isRunningNotifier,
+    required this.resultNotifier,
+    required this.downloadSamplesNotifier,
+    required this.uploadSamplesNotifier,
+    required this.latencySamplesNotifier,
     required this.onStart,
     required this.onCancel,
+    required this.onTapResult,
   });
 
-  String get _phaseText {
+  String _getPhaseText(TestPhase? phase) {
     switch (phase) {
       case TestPhase.download:
         return 'Measuring download...';
@@ -39,7 +40,7 @@ class SpeedTestCard extends StatelessWidget {
     }
   }
 
-  Color get _phaseColor {
+  Color _getPhaseColor(TestPhase? phase) {
     switch (phase) {
       case TestPhase.upload:
         return const Color(0xFFF4B400);
@@ -49,24 +50,6 @@ class SpeedTestCard extends StatelessWidget {
         return Colors.grey;
     }
   }
-
-  List<SpeedSample> get _currentSamples {
-    if (phase == TestPhase.download) return downloadSamples;
-    return uploadSamples;
-  }
-
-  double? get _downloadValue =>
-      result?.downloadMbps ?? downloadSamples.lastOrNull?.mbps;
-
-  double? get _uploadValue =>
-      result?.uploadMbps ?? uploadSamples.lastOrNull?.mbps;
-
-  double? get _latencyValue =>
-      result?.latencyMs ?? latencySamples.lastOrNull?.rttMs;
-
-  double? get _jitterValue => result?.jitterMs;
-
-  double? get _lossValue => result?.packetLossPercent;
 
   @override
   Widget build(BuildContext context) {
@@ -94,12 +77,19 @@ class SpeedTestCard extends StatelessWidget {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
               const Spacer(),
-              TextButton(
-                onPressed: () {},
-                child: const Text(
-                  'Lihat semua hasil',
-                  style: TextStyle(color: Color(0xFF7B1B7E)),
-                ),
+              ValueListenableBuilder<SpeedTestResult?>(
+                valueListenable: resultNotifier,
+                builder: (context, result, _) {
+                  if (result == null) return const SizedBox.shrink();
+
+                  return TextButton(
+                    onPressed: onTapResult,
+                    child: const Text(
+                      'Lihat hasil',
+                      style: TextStyle(color: Color(0xFF7B1B7E)),
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -107,7 +97,15 @@ class SpeedTestCard extends StatelessWidget {
           const SizedBox(height: 4),
 
           /// Phase label
-          Text(_phaseText, style: TextStyle(color: _phaseColor, fontSize: 14)),
+          ValueListenableBuilder<TestPhase?>(
+            valueListenable: phaseNotifier,
+            builder: (context, phase, _) {
+              return Text(
+                _getPhaseText(phase),
+                style: TextStyle(color: _getPhaseColor(phase), fontSize: 14),
+              );
+            },
+          ),
 
           const SizedBox(height: 20),
 
@@ -124,8 +122,10 @@ class SpeedTestCard extends StatelessWidget {
                   child: _SpeedValueBox(
                     title: 'Download',
                     color: const Color(0xFF7B1B7E),
-                    value: _downloadValue,
                     icon: Icons.arrow_downward,
+                    resultNotifier: resultNotifier,
+                    samplesNotifier: downloadSamplesNotifier,
+                    isDownload: true,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -133,8 +133,10 @@ class SpeedTestCard extends StatelessWidget {
                   child: _SpeedValueBox(
                     title: 'Upload',
                     color: const Color(0xFFF4B400),
-                    value: _uploadValue,
                     icon: Icons.arrow_upward,
+                    resultNotifier: resultNotifier,
+                    samplesNotifier: uploadSamplesNotifier,
+                    isDownload: false,
                   ),
                 ),
               ],
@@ -147,96 +149,137 @@ class SpeedTestCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _Metric(label: 'Latency', value: _latencyValue, unit: 'ms'),
-              _Metric(label: 'Jitter', value: _jitterValue, unit: 'ms'),
-              _Metric(label: 'Loss', value: _lossValue, unit: '%'),
+              _Metric(
+                label: 'Latency',
+                resultNotifier: resultNotifier,
+                latencySamplesNotifier: latencySamplesNotifier,
+                unit: 'ms',
+                type: _MetricType.latency,
+              ),
+              _Metric(
+                label: 'Jitter',
+                resultNotifier: resultNotifier,
+                latencySamplesNotifier: latencySamplesNotifier,
+                unit: 'ms',
+                type: _MetricType.jitter,
+              ),
+              _Metric(
+                label: 'Loss',
+                resultNotifier: resultNotifier,
+                latencySamplesNotifier: latencySamplesNotifier,
+                unit: '%',
+                type: _MetricType.loss,
+              ),
             ],
           ),
 
           const SizedBox(height: 16),
 
           /// Chart
-          SizedBox(
-            height: 120,
-            child: _SpeedChart(
-              samples: _currentSamples,
-              lineColor: _phaseColor,
-            ),
+          ValueListenableBuilder<TestPhase?>(
+            valueListenable: phaseNotifier,
+            builder: (context, phase, _) {
+              final samplesNotifier = phase == TestPhase.download
+                  ? downloadSamplesNotifier
+                  : uploadSamplesNotifier;
+
+              return ValueListenableBuilder<List<SpeedSample>>(
+                valueListenable: samplesNotifier,
+                builder: (context, samples, _) {
+                  if (samples.isEmpty) return const SizedBox.shrink();
+
+                  return SizedBox(
+                    height: 120,
+                    child: _SpeedChart(
+                      samples: samples,
+                      lineColor: _getPhaseColor(phase),
+                    ),
+                  );
+                },
+              );
+            },
           ),
 
           const SizedBox(height: 24),
 
           /// Button Section
-          Row(
-            children: [
-              /// START / RUNNING BUTTON
-              Expanded(
-                child: SizedBox(
-                  height: 54,
-                  child: ElevatedButton(
-                    onPressed: isRunning ? null : onStart,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF7B1B7E),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(28),
-                      ),
-                    ),
-                    child: isRunning
-                        ? Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.2,
+          ValueListenableBuilder<bool>(
+            valueListenable: isRunningNotifier,
+            builder: (context, isRunning, _) {
+              return Row(
+                children: [
+                  /// START / RUNNING BUTTON
+                  Expanded(
+                    child: SizedBox(
+                      height: 54,
+                      child: ElevatedButton(
+                        onPressed: isRunning ? null : onStart,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF7B1B7E),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
+                          ),
+                        ),
+                        child: isRunning
+                            ? const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  SizedBox(width: 12),
+                                  Text(
+                                    'Testing...',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : const Text(
+                                'Start Test',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
                                   color: Colors.white,
                                 ),
                               ),
-                              SizedBox(width: 12),
-                              Text(
-                                'Testing...',
-                                style: TextStyle(fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          )
-                        : const Text(
-                            'Start Test',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                            ),
-                          ),
-                  ),
-                ),
-              ),
-
-              /// CANCEL BUTTON (muncul hanya saat running)
-              if (isRunning) ...[
-                const SizedBox(width: 12),
-                Expanded(
-                  child: SizedBox(
-                    height: 54,
-                    child: OutlinedButton(
-                      onPressed: onCancel,
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.red),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28),
-                        ),
-                      ),
-                      child: const Text(
-                        'Cancel',
-                        style: TextStyle(
-                          color: Colors.red,
-                          fontWeight: FontWeight.w600,
-                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            ],
+
+                  /// CANCEL BUTTON
+                  if (isRunning) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: SizedBox(
+                        height: 54,
+                        child: OutlinedButton(
+                          onPressed: onCancel,
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.red),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(28),
+                            ),
+                          ),
+                          child: const Text(
+                            'Cancel',
+                            style: TextStyle(
+                              color: Colors.red,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            },
           ),
         ],
       ),
@@ -247,14 +290,18 @@ class SpeedTestCard extends StatelessWidget {
 class _SpeedValueBox extends StatelessWidget {
   final String title;
   final Color color;
-  final double? value;
   final IconData icon;
+  final ValueNotifier<SpeedTestResult?> resultNotifier;
+  final ValueNotifier<List<SpeedSample>> samplesNotifier;
+  final bool isDownload;
 
   const _SpeedValueBox({
     required this.title,
     required this.color,
-    required this.value,
     required this.icon,
+    required this.resultNotifier,
+    required this.samplesNotifier,
+    required this.isDownload,
   });
 
   @override
@@ -270,34 +317,61 @@ class _SpeedValueBox extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircleAvatar(
-              radius: 14,
-              backgroundColor: color,
-              child: Icon(icon, color: Colors.white, size: 16),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              value != null ? value!.toStringAsFixed(1) : '-',
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(width: 4),
-            const Text('Mbps'),
-          ],
+        ValueListenableBuilder<SpeedTestResult?>(
+          valueListenable: resultNotifier,
+          builder: (context, result, _) {
+            return ValueListenableBuilder<List<SpeedSample>>(
+              valueListenable: samplesNotifier,
+              builder: (context, samples, _) {
+                final value = isDownload
+                    ? (result?.downloadMbps ?? samples.lastOrNull?.mbps)
+                    : (result?.uploadMbps ?? samples.lastOrNull?.mbps);
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircleAvatar(
+                      radius: 14,
+                      backgroundColor: color,
+                      child: Icon(icon, color: Colors.white, size: 16),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      value != null ? value.toStringAsFixed(1) : '-',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text('Mbps'),
+                  ],
+                );
+              },
+            );
+          },
         ),
       ],
     );
   }
 }
 
+enum _MetricType { latency, jitter, loss }
+
 class _Metric extends StatelessWidget {
   final String label;
-  final double? value;
+  final ValueNotifier<SpeedTestResult?> resultNotifier;
+  final ValueNotifier<List<LatencySample>> latencySamplesNotifier;
   final String unit;
+  final _MetricType type;
 
-  const _Metric({required this.label, required this.value, required this.unit});
+  const _Metric({
+    required this.label,
+    required this.resultNotifier,
+    required this.latencySamplesNotifier,
+    required this.unit,
+    required this.type,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -305,9 +379,32 @@ class _Metric extends StatelessWidget {
       children: [
         Text(label, style: const TextStyle(color: Colors.grey)),
         const SizedBox(height: 4),
-        Text(
-          value != null ? '${value!.toStringAsFixed(2)} $unit' : '-',
-          style: const TextStyle(fontWeight: FontWeight.w600),
+        ValueListenableBuilder<SpeedTestResult?>(
+          valueListenable: resultNotifier,
+          builder: (context, result, _) {
+            return ValueListenableBuilder<List<LatencySample>>(
+              valueListenable: latencySamplesNotifier,
+              builder: (context, samples, _) {
+                final double? value;
+                switch (type) {
+                  case _MetricType.latency:
+                    value = result?.latencyMs ?? samples.lastOrNull?.rttMs;
+                    break;
+                  case _MetricType.jitter:
+                    value = result?.jitterMs;
+                    break;
+                  case _MetricType.loss:
+                    value = result?.packetLossPercent;
+                    break;
+                }
+
+                return Text(
+                  value != null ? '${value.toStringAsFixed(2)} $unit' : '-',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                );
+              },
+            );
+          },
         ),
       ],
     );
@@ -335,8 +432,8 @@ class _SpeedChart extends StatelessWidget {
     return LineChart(
       LineChartData(
         minY: 0,
-        gridData: FlGridData(show: false),
-        titlesData: FlTitlesData(show: false),
+        gridData: const FlGridData(show: false),
+        titlesData: const FlTitlesData(show: false),
         borderData: FlBorderData(show: false),
         lineBarsData: [
           LineChartBarData(
@@ -345,7 +442,7 @@ class _SpeedChart extends StatelessWidget {
             color: lineColor,
             barWidth: 4,
             isStrokeCapRound: true,
-            dotData: FlDotData(show: false),
+            dotData: const FlDotData(show: false),
             belowBarData: BarAreaData(
               show: true,
               gradient: LinearGradient(

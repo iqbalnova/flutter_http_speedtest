@@ -402,7 +402,7 @@ class SpeedTestResultSheet extends StatelessWidget {
   }
 
   Widget _rowLink(String label, String? value) {
-    if (value == null) return const SizedBox();
+    if (value == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(

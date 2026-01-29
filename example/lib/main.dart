@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_http_speedtest/flutter_http_speedtest.dart';
+import 'package:flutter_http_speedtest_example/widgets/feature_card.dart';
 import 'package:flutter_http_speedtest_example/widgets/speedtest_card.dart';
 import 'package:flutter_http_speedtest_example/widgets/speedtest_result_sheet.dart';
 
@@ -31,32 +32,47 @@ class SpeedTestScreen extends StatefulWidget {
 
 class _SpeedTestScreenState extends State<SpeedTestScreen> {
   SpeedTestEngine? _engine;
-  SpeedTestResult? _result;
-  TestPhase? _currentPhase;
-  bool _isRunning = false;
-  DateTime? _completedAt;
 
-  final List<SpeedSample> _downloadSamples = [];
-  final List<SpeedSample> _uploadSamples = [];
-  final List<LatencySample> _latencySamples = [];
+  // State notifiers
+  final ValueNotifier<SpeedTestResult?> _resultNotifier = ValueNotifier(null);
+  final ValueNotifier<TestPhase?> _currentPhaseNotifier = ValueNotifier(null);
+  final ValueNotifier<bool> _isRunningNotifier = ValueNotifier(false);
+  final ValueNotifier<DateTime?> _completedAtNotifier = ValueNotifier(null);
+  final ValueNotifier<List<SpeedSample>> _downloadSamplesNotifier =
+      ValueNotifier([]);
+  final ValueNotifier<List<SpeedSample>> _uploadSamplesNotifier = ValueNotifier(
+    [],
+  );
+  final ValueNotifier<List<LatencySample>> _latencySamplesNotifier =
+      ValueNotifier([]);
+
+  @override
+  void dispose() {
+    _resultNotifier.dispose();
+    _currentPhaseNotifier.dispose();
+    _isRunningNotifier.dispose();
+    _completedAtNotifier.dispose();
+    _downloadSamplesNotifier.dispose();
+    _uploadSamplesNotifier.dispose();
+    _latencySamplesNotifier.dispose();
+    super.dispose();
+  }
 
   void _startTest() {
-    setState(() {
-      _isRunning = true;
-      _result = null;
-      _currentPhase = null;
-      _downloadSamples.clear();
-      _uploadSamples.clear();
-      _latencySamples.clear();
-    });
+    _isRunningNotifier.value = true;
+    _resultNotifier.value = null;
+    _currentPhaseNotifier.value = null;
+    _downloadSamplesNotifier.value = [];
+    _uploadSamplesNotifier.value = [];
+    _latencySamplesNotifier.value = [];
 
     _engine = SpeedTestEngine(
       downloadBytes: 10 * 1024 * 1024, // 10MB
       uploadBytes: 3 * 1024 * 1024, // 3MB
       options: const SpeedTestOptions(
-        pingSamples: 15,
+        pingSamples: 5,
         sampleInterval: Duration(milliseconds: 250),
-        pingTimeout: Duration(seconds: 4),
+        pingTimeout: Duration(seconds: 10),
         downloadTimeout: Duration(seconds: 10),
         uploadTimeout: Duration(seconds: 10),
         maxTotalDuration: Duration(seconds: 25),
@@ -64,44 +80,45 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
       ),
       onPhaseChanged: (TestPhase phase) {
         print('Phase: $phase');
-        setState(() {
-          _currentPhase = phase;
-        });
+        _currentPhaseNotifier.value = phase;
       },
       onSample: (Sample sample) {
         print('Sample: $sample');
 
-        setState(() {
-          if (sample is SpeedSample) {
-            if (_currentPhase == TestPhase.download) {
-              _downloadSamples.add(sample);
-            } else if (_currentPhase == TestPhase.upload) {
-              _uploadSamples.add(sample);
-            }
-          } else if (sample is LatencySample) {
-            _latencySamples.add(sample);
+        if (sample is SpeedSample) {
+          if (_currentPhaseNotifier.value == TestPhase.download) {
+            _downloadSamplesNotifier.value = [
+              ..._downloadSamplesNotifier.value,
+              sample,
+            ];
+          } else if (_currentPhaseNotifier.value == TestPhase.upload) {
+            _uploadSamplesNotifier.value = [
+              ..._uploadSamplesNotifier.value,
+              sample,
+            ];
           }
-        });
+        } else if (sample is LatencySample) {
+          _latencySamplesNotifier.value = [
+            ..._latencySamplesNotifier.value,
+            sample,
+          ];
+        }
       },
       onCompleted: (result) {
         // CRITICAL: This will ONLY be called on successful completion
-        // Never called after cancel
         print('Test completed successfully!');
-        setState(() {
-          _result = result;
-          _completedAt = DateTime.now();
-          _isRunning = false;
-          _currentPhase = null;
-        });
+        _resultNotifier.value = result;
+        _completedAtNotifier.value = DateTime.now();
+        _isRunningNotifier.value = false;
+        _currentPhaseNotifier.value = null;
+        _openResultSheet();
       },
       onError: (error, stack) {
         // CRITICAL: This will ONLY be called on actual errors
-        // Never called after cancel
         print('Test failed with error: $error');
-        setState(() {
-          _isRunning = false;
-          _currentPhase = null;
-        });
+        _isRunningNotifier.value = false;
+        _currentPhaseNotifier.value = null;
+
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Error: $error')));
@@ -111,12 +128,10 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
     // Run the test - returns null if canceled
     _engine!.run().then((result) {
       if (result == null) {
-        // Test was canceled - this is the only callback you'll get
+        // Test was canceled
         print('Test was canceled by user');
-        setState(() {
-          _isRunning = false;
-          _currentPhase = null;
-        });
+        _isRunningNotifier.value = false;
+        _currentPhaseNotifier.value = null;
       }
     });
   }
@@ -126,10 +141,8 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
     _engine?.cancel();
 
     // Immediately update UI to show cancel state
-    setState(() {
-      _isRunning = false;
-      _currentPhase = null;
-    });
+    _isRunningNotifier.value = false;
+    _currentPhaseNotifier.value = null;
 
     // Show feedback to user
     ScaffoldMessenger.of(context).showSnackBar(
@@ -137,6 +150,34 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
         content: Text('Speed test canceled'),
         duration: Duration(seconds: 2),
       ),
+    );
+  }
+
+  void _openResultSheet() {
+    final result = _resultNotifier.value;
+    final completedAt = _completedAtNotifier.value;
+
+    if (result == null || completedAt == null) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      enableDrag: true,
+      builder: (_) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.85,
+          minChildSize: 0.5,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return SpeedTestResultSheet(
+              result: result,
+              completedAt: completedAt,
+              scrollController: scrollController,
+            );
+          },
+        );
+      },
     );
   }
 
@@ -154,41 +195,18 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SpeedTestCard(
-                phase: _currentPhase,
-                isRunning: _isRunning,
-                result: _result,
-                downloadSamples: _downloadSamples,
-                uploadSamples: _uploadSamples,
-                latencySamples: _latencySamples,
+                phaseNotifier: _currentPhaseNotifier,
+                isRunningNotifier: _isRunningNotifier,
+                resultNotifier: _resultNotifier,
+                downloadSamplesNotifier: _downloadSamplesNotifier,
+                uploadSamplesNotifier: _uploadSamplesNotifier,
+                latencySamplesNotifier: _latencySamplesNotifier,
                 onStart: _startTest,
                 onCancel: _cancelTest,
+                onTapResult: _openResultSheet,
               ),
-              if (_result != null)
-                TextButton(
-                  onPressed: () {
-                    showModalBottomSheet(
-                      context: context,
-                      isScrollControlled: true,
-                      backgroundColor: Colors.transparent,
-                      enableDrag: true,
-                      builder: (_) {
-                        return DraggableScrollableSheet(
-                          initialChildSize: 0.85,
-                          minChildSize: 0.5,
-                          maxChildSize: 0.95,
-                          builder: (context, scrollController) {
-                            return SpeedTestResultSheet(
-                              result: _result!,
-                              completedAt: _completedAt!,
-                              scrollController: scrollController,
-                            );
-                          },
-                        );
-                      },
-                    );
-                  },
-                  child: const Text('Speedtest Detail'),
-                ),
+              const SizedBox(height: 16),
+              const FeatureGrid(),
             ],
           ),
         ),
