@@ -4,6 +4,8 @@ PODS:
     - Flutter
   - flutter_icmp_ping (0.0.1):
     - Flutter
+  - flutter_network_diagnostics (0.0.1):
+    - Flutter
   - integration_test (0.0.1):
     - Flutter
   - network_info_plus (0.0.1):
@@ -15,6 +17,7 @@ DEPENDENCIES:
   - Flutter (from `Flutter`)
   - flutter_http_speedtest (from `.symlinks/plugins/flutter_http_speedtest/ios`)
   - flutter_icmp_ping (from `.symlinks/plugins/flutter_icmp_ping/ios`)
+  - flutter_network_diagnostics (from `.symlinks/plugins/flutter_network_diagnostics/ios`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - network_info_plus (from `.symlinks/plugins/network_info_plus/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
@@ -26,6 +29,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/flutter_http_speedtest/ios"
   flutter_icmp_ping:
     :path: ".symlinks/plugins/flutter_icmp_ping/ios"
+  flutter_network_diagnostics:
+    :path: ".symlinks/plugins/flutter_network_diagnostics/ios"
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
   network_info_plus:
@@ -37,6 +42,7 @@ SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_http_speedtest: dbbd443b3c87bd62ad9aa25548ca47715c8e40fa
   flutter_icmp_ping: 2b159955eee0c487c766ad83fec224ae35e7c935
+  flutter_network_diagnostics: 0f45a7775e8ecba4a449cd4a6d3c87455d31f064
   integration_test: 252f60fa39af5e17c3aa9899d35d908a0721b573
   network_info_plus: 6613d9d7cdeb0e6f366ed4dbe4b3c51c52d567a9
   permission_handler_apple: 9878588469a2b0d0fc1e048d9f43605f92e6cec2

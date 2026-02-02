@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_http_speedtest_example/screens/lan_scanner_screen.dart';
+import 'package:flutter_http_speedtest_example/screens/wifi_info_page.dart';
 
 class FeatureItem {
   final IconData icon;
@@ -31,7 +32,12 @@ class FeatureGrid extends StatelessWidget {
         icon: Icons.wifi,
         title: 'Informasi WiFi',
         subtitle: 'Detail WiFi yang digunakan',
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const WifiInfoPage()),
+          );
+        },
       ),
       FeatureItem(
         icon: Icons.analytics,
@@ -85,13 +91,6 @@ class _FeatureCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
