@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
+    <!-- Mobile Signal Meter permissions -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
     <application
         android:label="flutter_http_speedtest_example"
         android:name="${applicationName}"

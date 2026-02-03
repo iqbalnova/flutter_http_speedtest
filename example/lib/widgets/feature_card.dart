@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_http_speedtest_example/screens/lan_scanner_screen.dart';
 import 'package:flutter_http_speedtest_example/screens/wifi_info_page.dart';
+import 'package:flutter_http_speedtest_example/screens/signal_monitor_page.dart';
 
 class FeatureItem {
   final IconData icon;
@@ -26,7 +27,12 @@ class FeatureGrid extends StatelessWidget {
         icon: Icons.network_cell,
         title: 'Real-Time Signal Meter',
         subtitle: 'Pantau kekuatan sinyal',
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const SignalMonitorPage()),
+          );
+        },
       ),
       FeatureItem(
         icon: Icons.wifi,

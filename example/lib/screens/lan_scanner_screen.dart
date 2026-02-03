@@ -134,7 +134,6 @@ class _LanScannerScreenState extends State<LanScannerScreen> {
 
       // Get Wi-Fi name (requires location permission)
       final wifiName = await _networkInfo.getWifiName();
-      print('Wifi name: $wifiName');
       _ssidNotifier.value = wifiName ?? 'Unknown Network';
       debugPrint('Wi-Fi Name: $wifiName');
     } catch (e) {
