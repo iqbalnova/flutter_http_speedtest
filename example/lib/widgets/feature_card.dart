@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_http_speedtest_example/screens/lan_scanner_screen.dart';
 import 'package:flutter_http_speedtest_example/screens/wifi_info_page.dart';
 import 'package:flutter_http_speedtest_example/screens/signal_monitor_page.dart';
+import 'package:flutter_http_speedtest_example/screens/wifi_scan_page.dart';
 
 class FeatureItem {
   final IconData icon;
@@ -49,7 +50,12 @@ class FeatureGrid extends StatelessWidget {
         icon: Icons.analytics,
         title: 'Analisis Kekuatan Wifi',
         subtitle: 'Cek kualitas Wifi',
-        onTap: () {},
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const WifiScanPage()),
+          );
+        },
       ),
       FeatureItem(
         icon: Icons.radar,
