@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_http_speedtest/flutter_http_speedtest.dart';
+import 'package:flutter_http_speedtest_example/screens/speed_test_history_page.dart';
 
 class SpeedTestCard extends StatelessWidget {
   final ValueNotifier<TestPhase?> phaseNotifier;
@@ -90,6 +91,17 @@ class SpeedTestCard extends StatelessWidget {
                     ),
                   );
                 },
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const SpeedTestHistoryPage(),
+                    ),
+                  );
+                },
+                child: Text('OPEN'),
               ),
             ],
           ),

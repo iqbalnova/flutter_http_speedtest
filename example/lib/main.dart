@@ -1,7 +1,10 @@
 // example/main.dart
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_http_speedtest/flutter_http_speedtest.dart';
+import 'package:flutter_http_speedtest_example/services/speed_test_history_service.dart';
 import 'package:flutter_http_speedtest_example/widgets/feature_card.dart';
 import 'package:flutter_http_speedtest_example/widgets/speedtest_card.dart';
 import 'package:flutter_http_speedtest_example/widgets/speedtest_result_sheet.dart';
@@ -46,6 +49,30 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
   final ValueNotifier<List<LatencySample>> _latencySamplesNotifier =
       ValueNotifier([]);
 
+  // Speedtest history service
+  final _historyService = SpeedTestHistoryService();
+  bool _isHistoryServiceReady = false;
+
+  Future<void> _initializeHistoryService() async {
+    try {
+      await _historyService.init();
+      if (mounted) {
+        setState(() {
+          _isHistoryServiceReady = true;
+        });
+      }
+      debugPrint('History service initialized successfully');
+    } catch (e) {
+      debugPrint('Error initializing history service: $e');
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeHistoryService();
+  }
+
   @override
   void dispose() {
     _resultNotifier.dispose();
@@ -55,6 +82,8 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
     _downloadSamplesNotifier.dispose();
     _uploadSamplesNotifier.dispose();
     _latencySamplesNotifier.dispose();
+    // Don't dispose singleton service
+    // _historyService.dispose();
     super.dispose();
   }
 
@@ -153,12 +182,13 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
     );
   }
 
-  void _openResultSheet() {
+  void _openResultSheet() async {
     final result = _resultNotifier.value;
     final completedAt = _completedAtNotifier.value;
 
     if (result == null || completedAt == null) return;
 
+    // Show the result sheet first
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -179,6 +209,34 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
         );
       },
     );
+
+    // Save to history - simplified approach
+    // Just pass the result and timestamp directly!
+    if (_isHistoryServiceReady) {
+      try {
+        await _historyService.addHistory(
+          result, // SpeedTestResult from _resultNotifier.value
+          timestamp: completedAt, // Use the completedAt timestamp
+        );
+        debugPrint('Speed test result saved to history');
+      } catch (e) {
+        debugPrint('Error saving to history: $e');
+        // Optionally show a snackbar, but don't block the UI
+      }
+    } else {
+      debugPrint('History service not ready yet, result not saved');
+      // Optionally retry after a delay
+      Future.delayed(const Duration(seconds: 1), () async {
+        if (_isHistoryServiceReady) {
+          try {
+            await _historyService.addHistory(result, timestamp: completedAt);
+            debugPrint('Speed test result saved to history (delayed)');
+          } catch (e) {
+            debugPrint('Error saving to history (delayed): $e');
+          }
+        }
+      });
+    }
   }
 
   @override

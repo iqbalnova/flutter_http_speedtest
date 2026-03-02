@@ -45,6 +45,8 @@ dependencies:
   dart_ping: ^9.0.1
   permission_handler: ^12.0.1
   syncfusion_flutter_gauges: ^32.1.25
+  hive_ce: ^2.19.3
+  hive_ce_flutter: ^2.3.4
 
 dev_dependencies:
   integration_test:
