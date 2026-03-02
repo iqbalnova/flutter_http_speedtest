@@ -150,9 +150,11 @@ packages:
   flutter_http_speedtest:
     dependency: "direct main"
     description:
-      path: ".."
-      relative: true
-    source: path
+      path: "."
+      ref: "0.0.3"
+      resolved-ref: e10863eb77a48a67e1ec1a939d11470dc5636b86
+      url: "https://github.com/iqbalnova/flutter_http_speedtest.git"
+    source: git
     version: "0.0.2"
   flutter_icmp_ping:
     dependency: transitive
@@ -173,9 +175,11 @@ packages:
   flutter_network_diagnostics:
     dependency: "direct main"
     description:
-      path: "../../flutter_network_diagnostics"
-      relative: true
-    source: path
+      path: "."
+      ref: "0.0.1"
+      resolved-ref: "8e6a3c6a11d0fabe5b865fe42463c3141c39e935"
+      url: "https://github.com/iqbalnova/flutter_network_diagnostics.git"
+    source: git
     version: "0.0.1"
   flutter_test:
     dependency: "direct dev"
