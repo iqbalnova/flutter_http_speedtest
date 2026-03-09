@@ -96,19 +96,23 @@ class _SpeedTestScreenState extends State<SpeedTestScreen> {
     _latencySamplesNotifier.value = [];
 
     _engine = SpeedTestEngine(
-      downloadBytes: 10 * 1024 * 1024, // 10MB
-      uploadBytes: 3 * 1024 * 1024, // 3MB
+      // CHANGED: removed downloadBytes/uploadBytes — Ookla methodology is duration-based, not byte-count-based
       options: const SpeedTestOptions(
-        pingSamples: 5,
-        sampleInterval: Duration(milliseconds: 250),
+        // CHANGED: pingSamples → pingCount (renamed to match Ookla terminology)
+        pingCount: 5,
+        // CHANGED: sampleInterval removed — now controlled by sampleRatePerSecond (default 30 Hz)
+        // CHANGED: pingTimeout stays the same name
         pingTimeout: Duration(seconds: 10),
-        downloadTimeout: Duration(seconds: 10),
-        uploadTimeout: Duration(seconds: 10),
-        maxTotalDuration: Duration(seconds: 25),
+        // CHANGED: downloadTimeout → downloadDuration (Ookla runs for a fixed duration)
+        downloadDuration: Duration(seconds: 5),
+        // CHANGED: uploadTimeout → uploadDuration (Ookla runs for a fixed duration)
+        uploadDuration: Duration(seconds: 5),
+        maxTotalDuration: Duration(seconds: 35),
         retries: 1,
       ),
-      onPhaseChanged: (TestPhase phase) {
-        print('Phase: $phase');
+      // CHANGED: onPhaseChanged now receives (TestPhase, PhaseStatus) instead of just TestPhase
+      onPhaseChanged: (TestPhase phase, PhaseStatus status) {
+        print('Phase: $phase, Status: $status');
         _currentPhaseNotifier.value = phase;
       },
       onSample: (Sample sample) {

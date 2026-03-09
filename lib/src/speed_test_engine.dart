@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'cancel_token.dart';
 import 'models/speed_test_result.dart';
 import 'models/speed_test_options.dart';
 import 'models/metadata.dart';
@@ -12,30 +13,40 @@ import 'models/enums.dart';
 import 'models/exceptions.dart';
 import 'services/latency_service.dart';
 import 'services/download_service.dart';
-import 'services/tcp_ping_service.dart';
 import 'services/upload_service.dart';
 import 'services/metadata_service.dart';
 import 'services/quality_scorer.dart';
 
-/// Main speed test engine with production-grade cancel and error handling
+/// Production-grade speed test orchestrator (Ookla methodology).
+///
+/// Runs metadata → ping → download (+ loaded latency) → upload in sequence.
+/// Uses a shared [CancelToken] for cooperative cancellation across all phases.
+///
+/// The engine is **reusable** — call [run] multiple times.
+/// Each invocation resets state and creates a fresh [CancelToken].
 class SpeedTestEngine {
-  final int downloadBytes;
-  final int uploadBytes;
+  /// Tunables for the entire run.
   final SpeedTestOptions options;
 
-  // Callbacks
-  void Function(TestPhase phase)? onPhaseChanged;
+  // ── Callbacks ──────────────────────────────────────────────────────
+
+  /// Fires when a phase begins or its status changes.
+  void Function(TestPhase phase, PhaseStatus status)? onPhaseChanged;
+
+  /// Fires for every latency or speed sample (for gauge animation).
   void Function(Sample sample)? onSample;
+
+  /// Fires once after all phases complete successfully.
   void Function(SpeedTestResult result)? onCompleted;
+
+  /// Fires on fatal errors (never on cancel).
   void Function(Object error, StackTrace stack)? onError;
 
-  bool _canceled = false;
-  bool _hasError = false; // Track if error occurred
-  final Completer<void> _cancelCompleter = Completer<void>();
+  // ── Internal state ─────────────────────────────────────────────────
+
+  CancelToken _cancelToken = CancelToken();
 
   SpeedTestEngine({
-    this.downloadBytes = 3 * 1024 * 1024,
-    this.uploadBytes = 3 * 1024 * 1024,
     this.options = const SpeedTestOptions(),
     this.onPhaseChanged,
     this.onSample,
@@ -43,295 +54,195 @@ class SpeedTestEngine {
     this.onError,
   });
 
-  /// Cancel the current test
+  /// Cancel the currently running test.
   ///
-  /// Triggers immediate cancellation of all phases.
-  /// No callbacks will be invoked after cancel.
-  void cancel() {
-    if (!_canceled) {
-      _canceled = true;
-      if (!_cancelCompleter.isCompleted) {
-        _cancelCompleter.complete();
-      }
-    }
-  }
+  /// Idempotent — safe to call more than once or when idle.
+  /// After cancellation the engine can be reused; [run] creates a fresh
+  /// [CancelToken] on each invocation.
+  void cancel() => _cancelToken.cancel();
 
-  /// Run the complete speed test
+  /// Run the complete speed test.
   ///
-  /// Returns the result on success.
-  /// Throws on errors.
-  /// Returns null and invokes no callbacks on cancel or error.
+  /// Returns a [SpeedTestResult] on success, or `null` if the test was
+  /// canceled or a fatal error occurred.
   Future<SpeedTestResult?> run() async {
-    _canceled = false;
-    _hasError = false;
-    final globalTimeout = Timer(options.maxTotalDuration, () => cancel());
+    // Fresh state for every run — makes the engine fully reusable.
+    _cancelToken = CancelToken();
+    final ct = _cancelToken;
+
+    final globalTimeout = Timer(options.maxTotalDuration, cancel);
 
     try {
-      final result = await _runTest();
+      final result = await _runTest(ct);
       globalTimeout.cancel();
 
-      // CRITICAL: Only call onCompleted if not canceled AND no error occurred
-      if (!_canceled && !_hasError) {
+      if (!ct.isCanceled) {
         onCompleted?.call(result);
       }
-
       return result;
-    } on SpeedTestCanceledException catch (_) {
-      // Cancellation is NOT an error - exit silently
+    } on SpeedTestCanceledException {
+      // Cancel is NOT an error — exit silently, zero callbacks.
       globalTimeout.cancel();
-      return null;
-    } on SocketException catch (e, stack) {
-      // Connection error - stop immediately
-      globalTimeout.cancel();
-      _hasError = true;
-
-      if (!_canceled) {
-        onError?.call(e, stack);
-      }
-      return null;
-    } on TimeoutException catch (e, stack) {
-      // Timeout error - stop immediately
-      globalTimeout.cancel();
-      _hasError = true;
-
-      if (!_canceled) {
-        onError?.call(e, stack);
-      }
       return null;
     } catch (e, stack) {
-      // Any other error - stop immediately
       globalTimeout.cancel();
-      _hasError = true;
-
-      if (!_canceled) {
+      if (!ct.isCanceled) {
         onError?.call(e, stack);
       }
       return null;
     }
   }
 
-  Future<SpeedTestResult> _runTest() async {
+  // ══════════════════════════════════════════════════════════════════════
+  // Internal orchestration
+  // ══════════════════════════════════════════════════════════════════════
+
+  Future<SpeedTestResult> _runTest(CancelToken ct) async {
     final latencyService = LatencyService(options);
     final downloadService = DownloadService(options);
     final uploadService = UploadService(options);
     final metadataService = MetadataService(options);
 
-    // Phase statuses
-    final statuses = <TestPhase, PhaseStatus>{};
+    // Phase statuses — start everything as pending.
+    final statuses = <TestPhase, PhaseStatus>{
+      TestPhase.metadata: const PhaseStatus.pending(),
+      TestPhase.ping: const PhaseStatus.pending(),
+      TestPhase.download: const PhaseStatus.pending(),
+      TestPhase.upload: const PhaseStatus.pending(),
+    };
 
-    // Results
+    // Collected results
     double? downloadMbps;
     double? uploadMbps;
     double? latencyMs;
     double? jitterMs;
     double? packetLossPercent;
+    double? latencyMinMs;
+    double? latencyMaxMs;
+    double? latencyMedianMs;
     double? loadedLatencyMs;
     NetworkMetadata? metadata;
 
-    List<SpeedSample> downloadSeries = [];
-    List<SpeedSample> uploadSeries = [];
-    List<LatencySample> latencySeries = [];
+    final downloadSeries = <SpeedSample>[];
+    final uploadSeries = <SpeedSample>[];
+    final latencySeries = <LatencySample>[];
 
-    // ====================================================================
-    // Phase 1: Metadata
-    // ====================================================================
-    _checkCanceled();
-    onPhaseChanged?.call(TestPhase.metadata);
+    // ================================================================
+    // Phase 1: Metadata (non-critical — log and skip on failure)
+    // ================================================================
+    ct.throwIfCanceled();
+    _emit(TestPhase.metadata, const PhaseStatus.running(), statuses);
 
     try {
-      metadata = await _runPhase(
-        TestPhase.metadata,
-        () => metadataService.fetchMetadata(),
-        statuses,
+      metadata = await _withRetry(
+        () => metadataService.fetchMetadata(cancelToken: ct),
+        ct,
       );
-    } catch (e) {
-      if (e is SpeedTestCanceledException) {
-        rethrow;
-      }
-      // Connection errors in metadata phase should stop the test
-      if (e is SocketException || e is TimeoutException) {
-        statuses[TestPhase.metadata] = PhaseStatus.failed(e.toString());
-        rethrow; // Stop immediately
-      }
-      // Other errors are non-critical, continue
-      statuses[TestPhase.metadata] = PhaseStatus.failed(e.toString());
+      _emit(TestPhase.metadata, const PhaseStatus.success(), statuses);
+    } on SpeedTestCanceledException {
+      _emit(TestPhase.metadata, const PhaseStatus.canceled(), statuses);
+      rethrow;
+    } catch (_) {
+      // Metadata failure is non-critical — skip and continue.
+      _emit(TestPhase.metadata, const PhaseStatus.skipped(), statuses);
     }
 
-    // ====================================================================
-    // Phase 2: Ping/Latency
-    // ====================================================================
-    _checkCanceled();
-    onPhaseChanged?.call(TestPhase.ping);
+    // ================================================================
+    // Phase 2: Ping / Latency (critical — stop on failure)
+    // ================================================================
+    ct.throwIfCanceled();
+    _emit(TestPhase.ping, const PhaseStatus.running(), statuses);
 
     try {
-      final pingResult = await _runPhase(
-        TestPhase.ping,
+      final pingResult = await _withRetry(
         () => latencyService.measureLatency(
+          cancelToken: ct,
           onSample: (sample) {
             latencySeries.add(sample);
             onSample?.call(sample);
           },
-          cancelToken: _cancelCompleter.future,
         ),
-        statuses,
+        ct,
       );
       latencyMs = pingResult.latencyMs;
       jitterMs = pingResult.jitterMs;
       packetLossPercent = pingResult.packetLossPercent;
+      latencyMinMs = pingResult.minMs;
+      latencyMaxMs = pingResult.maxMs;
+      latencyMedianMs = pingResult.medianMs;
+      _emit(TestPhase.ping, const PhaseStatus.success(), statuses);
+    } on SpeedTestCanceledException {
+      _emit(TestPhase.ping, const PhaseStatus.canceled(), statuses);
+      rethrow;
     } catch (e) {
-      if (e is SpeedTestCanceledException) {
-        rethrow;
-      }
-      // Connection errors should stop the test
-      if (e is SocketException || e is TimeoutException) {
-        statuses[TestPhase.ping] = PhaseStatus.failed(e.toString());
-        rethrow; // Stop immediately
-      }
-      statuses[TestPhase.ping] = PhaseStatus.failed(e.toString());
+      _emit(TestPhase.ping, PhaseStatus.failed(e.toString()), statuses);
+      rethrow; // Ping failure → stop entire test
     }
 
-    // ====================================================================
-    // Phase 3: Download
-    // ====================================================================
-    _checkCanceled();
-    onPhaseChanged?.call(TestPhase.download);
+    // ================================================================
+    // Phase 3: Download + loaded latency (concurrent)
+    // ================================================================
+    ct.throwIfCanceled();
+    _emit(TestPhase.download, const PhaseStatus.running(), statuses);
 
     try {
-      final downloadResult = await _runPhase(
-        TestPhase.download,
+      final dlFuture = _withRetry(
         () => downloadService.measureDownload(
-          bytes: downloadBytes,
-          onSample: (SpeedSample sample) {
+          cancelToken: ct,
+          onSample: (sample) {
             downloadSeries.add(sample);
             onSample?.call(sample);
           },
-          onLoadedLatency: (ll) => loadedLatencyMs = ll,
-          cancelToken: _cancelCompleter.future,
         ),
-        statuses,
+        ct,
       );
-      downloadMbps = downloadResult;
+
+      final llFuture = latencyService.measureLoadedLatency(cancelToken: ct);
+
+      final results = await Future.wait<Object?>([dlFuture, llFuture]);
+      downloadMbps = results[0] as double;
+      loadedLatencyMs = results[1] as double?;
+
+      _emit(TestPhase.download, const PhaseStatus.success(), statuses);
+    } on SpeedTestCanceledException {
+      _emit(TestPhase.download, const PhaseStatus.canceled(), statuses);
+      rethrow;
     } catch (e) {
-      if (e is SpeedTestCanceledException) {
-        rethrow;
-      }
-      // Connection errors should stop the test
-      if (e is SocketException || e is TimeoutException) {
-        statuses[TestPhase.download] = PhaseStatus.failed(e.toString());
-        rethrow; // Stop immediately
-      }
-      statuses[TestPhase.download] = PhaseStatus.failed(e.toString());
+      _emit(TestPhase.download, PhaseStatus.failed(e.toString()), statuses);
+      rethrow; // Download failure → stop
     }
 
-    // ====================================================================
-    // Phase 4: Upload
-    // ====================================================================
-    _checkCanceled();
-    onPhaseChanged?.call(TestPhase.upload);
+    // ================================================================
+    // Phase 4: Upload (critical — stop on failure)
+    // ================================================================
+    ct.throwIfCanceled();
+    _emit(TestPhase.upload, const PhaseStatus.running(), statuses);
 
     try {
-      final uploadResult = await _runPhase(
-        TestPhase.upload,
+      uploadMbps = await _withRetry(
         () => uploadService.measureUpload(
-          bytes: uploadBytes,
+          cancelToken: ct,
           onSample: (sample) {
             uploadSeries.add(sample);
             onSample?.call(sample);
           },
-          cancelToken: _cancelCompleter.future,
         ),
-        statuses,
+        ct,
       );
-      uploadMbps = uploadResult;
-    } catch (e) {
-      if (e is SpeedTestCanceledException) {
-        rethrow;
-      }
-      // Connection errors should stop the test
-      if (e is SocketException || e is TimeoutException) {
-        statuses[TestPhase.upload] = PhaseStatus.failed(e.toString());
-        rethrow; // Stop immediately
-      }
-      statuses[TestPhase.upload] = PhaseStatus.failed(e.toString());
-    }
-
-    // ====================================================================
-    // Final check before building result
-    // ====================================================================
-    _checkCanceled();
-
-    return _buildResult(
-      statuses: statuses,
-      downloadMbps: downloadMbps,
-      uploadMbps: uploadMbps,
-      latencyMs: latencyMs,
-      jitterMs: jitterMs,
-      packetLossPercent: packetLossPercent,
-      loadedLatencyMs: loadedLatencyMs,
-      metadata: metadata,
-      downloadSeries: downloadSeries,
-      uploadSeries: uploadSeries,
-      latencySeries: latencySeries,
-    );
-  }
-
-  /// Check if test was canceled and throw if so
-  void _checkCanceled() {
-    if (_canceled) {
-      throw SpeedTestCanceledException();
-    }
-  }
-
-  /// Run a single test phase with proper error handling
-  Future<T> _runPhase<T>(
-    TestPhase phase,
-    Future<T> Function() fn,
-    Map<TestPhase, PhaseStatus> statuses,
-  ) async {
-    try {
-      // Check cancel before starting phase
-      _checkCanceled();
-
-      final result = await fn();
-
-      // Check cancel after phase completes
-      _checkCanceled();
-
-      statuses[phase] = PhaseStatus.success();
-      return result;
+      _emit(TestPhase.upload, const PhaseStatus.success(), statuses);
     } on SpeedTestCanceledException {
-      // Mark as canceled and rethrow
-      statuses[phase] = PhaseStatus.canceled();
+      _emit(TestPhase.upload, const PhaseStatus.canceled(), statuses);
       rethrow;
-    } on SocketException catch (e) {
-      // Connection error - mark and rethrow to stop test
-      statuses[phase] = PhaseStatus.failed('Connection error: ${e.message}');
-      rethrow;
-    } on TimeoutException {
-      statuses[phase] = PhaseStatus.timeout();
-      throw SpeedTestTimeoutException(
-        phase.toString(),
-        options.maxTotalDuration,
-      );
     } catch (e) {
-      statuses[phase] = PhaseStatus.failed(e.toString());
-      rethrow; // Rethrow all errors to stop the test
+      _emit(TestPhase.upload, PhaseStatus.failed(e.toString()), statuses);
+      rethrow; // Upload failure → stop
     }
-  }
 
-  SpeedTestResult _buildResult({
-    required Map<TestPhase, PhaseStatus> statuses,
-    required double? downloadMbps,
-    required double? uploadMbps,
-    required double? latencyMs,
-    required double? jitterMs,
-    required double? packetLossPercent,
-    required double? loadedLatencyMs,
-    required NetworkMetadata? metadata,
-    required List<SpeedSample> downloadSeries,
-    required List<SpeedSample> uploadSeries,
-    required List<LatencySample> latencySeries,
-  }) {
+    // ================================================================
+    // Build result
+    // ================================================================
+    ct.throwIfCanceled();
+
     final quality = QualityScorer.calculateQuality(
       latencyMs: latencyMs,
       jitterMs: jitterMs,
@@ -347,6 +258,9 @@ class SpeedTestEngine {
       latencyMs: latencyMs,
       jitterMs: jitterMs,
       packetLossPercent: packetLossPercent,
+      latencyMinMs: latencyMinMs,
+      latencyMaxMs: latencyMaxMs,
+      latencyMedianMs: latencyMedianMs,
       loadedLatencyMs: loadedLatencyMs,
       metadata: metadata,
       downloadSeries: downloadSeries,
@@ -355,5 +269,47 @@ class SpeedTestEngine {
       quality: quality,
       phaseStatuses: statuses,
     );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Helpers
+  // ══════════════════════════════════════════════════════════════════════
+
+  /// Emit a phase status change and notify the callback.
+  void _emit(
+    TestPhase phase,
+    PhaseStatus status,
+    Map<TestPhase, PhaseStatus> statuses,
+  ) {
+    statuses[phase] = status;
+    onPhaseChanged?.call(phase, status);
+  }
+
+  /// Retry [fn] up to [options.retries] additional attempts.
+  ///
+  /// Only retries on timeout / HTTP errors.
+  /// [SocketException] (network down) and cancellation propagate immediately.
+  Future<T> _withRetry<T>(
+    Future<T> Function() fn,
+    CancelToken cancelToken, {
+    int? maxAttempts,
+    Duration delay = const Duration(milliseconds: 500),
+  }) async {
+    final attempts = (maxAttempts ?? options.retries) + 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+      cancelToken.throwIfCanceled();
+      try {
+        return await fn();
+      } on SpeedTestCanceledException {
+        rethrow;
+      } on SocketException {
+        rethrow; // Network down — no point retrying.
+      } catch (e) {
+        if (attempt == attempts - 1) rethrow;
+        await Future.delayed(delay);
+        cancelToken.throwIfCanceled();
+      }
+    }
+    throw StateError('unreachable');
   }
 }

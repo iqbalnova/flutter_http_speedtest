@@ -4,7 +4,16 @@ import 'dart:math' as math;
 import '../models/network_quality.dart';
 import '../models/enums.dart';
 
+/// Computes WiFiMan / Ookla-style quality grades.
+///
+/// ```
+/// Excellent : latency < 20ms, jitter < 5ms, loss = 0 %, dl > 50 Mbps
+/// Good      : latency < 50ms, jitter < 15ms, loss < 1 %, dl > 10 Mbps
+/// Fair      : latency < 100ms, jitter < 30ms, loss < 5 %, dl > 2 Mbps
+/// Poor      : anything worse
+/// ```
 class QualityScorer {
+  /// Compute the full quality profile from test results.
   static NetworkQuality calculateQuality({
     double? latencyMs,
     double? jitterMs,
@@ -13,13 +22,13 @@ class QualityScorer {
     double? uploadMbps,
     double? loadedLatencyMs,
   }) {
-    final streaming = _calculateStreamingScore(
+    final streaming = _streamingScore(
       downloadMbps: downloadMbps,
       latencyMs: latencyMs,
       packetLossPercent: packetLossPercent,
     );
 
-    final gaming = _calculateGamingScore(
+    final gaming = _gamingScore(
       latencyMs: latencyMs,
       jitterMs: jitterMs,
       packetLossPercent: packetLossPercent,
@@ -27,7 +36,7 @@ class QualityScorer {
       loadedLatencyMs: loadedLatencyMs,
     );
 
-    final rtc = _calculateRtcScore(
+    final rtc = _rtcScore(
       latencyMs: latencyMs,
       jitterMs: jitterMs,
       packetLossPercent: packetLossPercent,
@@ -38,29 +47,33 @@ class QualityScorer {
     return NetworkQuality(streaming: streaming, gaming: gaming, rtc: rtc);
   }
 
-  static ScenarioQuality _calculateStreamingScore({
+  // ────────────────────────────────────────────────────────────────────
+  // Scenario scorers
+  // ────────────────────────────────────────────────────────────────────
+
+  static ScenarioQuality _streamingScore({
     double? downloadMbps,
     double? latencyMs,
     double? packetLossPercent,
   }) {
     double score = 0;
 
-    // Download speed (60% weight) - streaming needs good download
+    // Download speed (60 % weight)
     if (downloadMbps != null) {
       if (downloadMbps >= 50) {
         score += 60;
       } else if (downloadMbps >= 25) {
-        score += 50 + ((downloadMbps - 25) / 25) * 10;
+        score += 50 + (downloadMbps - 25) / 25 * 10;
       } else if (downloadMbps >= 10) {
-        score += 35 + ((downloadMbps - 10) / 15) * 15;
+        score += 35 + (downloadMbps - 10) / 15 * 15;
       } else if (downloadMbps >= 5) {
-        score += 20 + ((downloadMbps - 5) / 5) * 15;
+        score += 20 + (downloadMbps - 5) / 5 * 15;
       } else {
-        score += (downloadMbps / 5) * 20;
+        score += downloadMbps / 5 * 20;
       }
     }
 
-    // Latency (20% weight) - less critical for streaming
+    // Latency (20 % weight)
     if (latencyMs != null) {
       if (latencyMs <= 50) {
         score += 20;
@@ -73,7 +86,7 @@ class QualityScorer {
       }
     }
 
-    // Packet loss (20% weight)
+    // Packet loss (20 % weight)
     if (packetLossPercent != null) {
       if (packetLossPercent == 0) {
         score += 20;
@@ -93,7 +106,7 @@ class QualityScorer {
     );
   }
 
-  static ScenarioQuality _calculateGamingScore({
+  static ScenarioQuality _gamingScore({
     double? latencyMs,
     double? jitterMs,
     double? packetLossPercent,
@@ -102,31 +115,34 @@ class QualityScorer {
   }) {
     double score = 0;
 
-    // Latency (40% weight) - critical for gaming
+    // Latency (35 % weight)
     if (latencyMs != null) {
-      if (latencyMs <= 20) {
-        score += 40;
-      } else if (latencyMs <= 50) {
-        score += 30 + (30 - (latencyMs - 20)) / 30 * 10;
-      } else if (latencyMs <= 100) {
-        score += 15 + (50 - (latencyMs - 50)) / 50 * 15;
+      final effectiveLatency = loadedLatencyMs ?? latencyMs;
+      if (effectiveLatency <= 20) {
+        score += 35;
+      } else if (effectiveLatency <= 50) {
+        score += 25 + (30 - (effectiveLatency - 20)) / 30 * 10;
+      } else if (effectiveLatency <= 100) {
+        score += 10 + (50 - (effectiveLatency - 50)) / 50 * 15;
       } else {
-        score += math.max(0, 15 - (latencyMs - 100) / 50);
+        score += math.max(0, 10 - (effectiveLatency - 100) / 50);
       }
     }
 
-    // Jitter (25% weight) - very important
+    // Jitter (30 % weight)
     if (jitterMs != null) {
       if (jitterMs <= 5) {
-        score += 25;
+        score += 30;
       } else if (jitterMs <= 15) {
-        score += 15 + (10 - (jitterMs - 5)) / 10 * 10;
+        score += 20 + (10 - (jitterMs - 5)) / 10 * 10;
       } else if (jitterMs <= 30) {
-        score += 5 + (15 - (jitterMs - 15)) / 15 * 10;
+        score += 10 + (15 - (jitterMs - 15)) / 15 * 10;
+      } else {
+        score += math.max(0, 10 - (jitterMs - 30) / 20);
       }
     }
 
-    // Packet loss (25% weight) - critical
+    // Packet loss (25 % weight)
     if (packetLossPercent != null) {
       if (packetLossPercent == 0) {
         score += 25;
@@ -139,14 +155,14 @@ class QualityScorer {
       }
     }
 
-    // Download speed (10% weight) - less critical
+    // Download speed (10 % weight)
     if (downloadMbps != null) {
       if (downloadMbps >= 10) {
         score += 10;
       } else if (downloadMbps >= 5) {
         score += 5 + (downloadMbps - 5) / 5 * 5;
       } else {
-        score += (downloadMbps / 5) * 5;
+        score += downloadMbps / 5 * 5;
       }
     }
 
@@ -157,7 +173,7 @@ class QualityScorer {
     );
   }
 
-  static ScenarioQuality _calculateRtcScore({
+  static ScenarioQuality _rtcScore({
     double? latencyMs,
     double? jitterMs,
     double? packetLossPercent,
@@ -166,7 +182,7 @@ class QualityScorer {
   }) {
     double score = 0;
 
-    // Latency (30% weight)
+    // Latency (30 % weight)
     if (latencyMs != null) {
       if (latencyMs <= 30) {
         score += 30;
@@ -179,7 +195,7 @@ class QualityScorer {
       }
     }
 
-    // Jitter (30% weight) - critical for RTC
+    // Jitter (30 % weight)
     if (jitterMs != null) {
       if (jitterMs <= 10) {
         score += 30;
@@ -187,10 +203,12 @@ class QualityScorer {
         score += 20 + (10 - (jitterMs - 10)) / 10 * 10;
       } else if (jitterMs <= 40) {
         score += 10 + (20 - (jitterMs - 20)) / 20 * 10;
+      } else {
+        score += math.max(0, 10 - (jitterMs - 40) / 30);
       }
     }
 
-    // Packet loss (25% weight) - very critical
+    // Packet loss (25 % weight)
     if (packetLossPercent != null) {
       if (packetLossPercent == 0) {
         score += 25;
@@ -203,7 +221,7 @@ class QualityScorer {
       }
     }
 
-    // Upload speed (15% weight) - important for video calls
+    // Upload speed (15 % weight)
     if (uploadMbps != null) {
       if (uploadMbps >= 5) {
         score += 15;
@@ -222,6 +240,10 @@ class QualityScorer {
       scenario: 'Video Chatting',
     );
   }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Grade mapping – WiFiMan style
+  // ────────────────────────────────────────────────────────────────────
 
   static NetworkQualityGrade _scoreToGrade(double score) {
     if (score >= 80) return NetworkQualityGrade.great;

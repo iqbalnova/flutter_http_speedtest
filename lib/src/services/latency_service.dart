@@ -4,49 +4,52 @@ import 'dart:async';
 import 'dart:io';
 import 'package:dart_ping/dart_ping.dart';
 import 'package:dart_ping_ios/dart_ping_ios.dart';
+import '../cancel_token.dart';
 import '../models/speed_test_options.dart';
 import '../models/sample.dart';
+import '../models/exceptions.dart';
 
 class LatencyResult {
   final double latencyMs;
   final double jitterMs;
   final double packetLossPercent;
+  final double minMs;
+  final double maxMs;
+  final double medianMs;
 
   LatencyResult({
     required this.latencyMs,
     required this.jitterMs,
     required this.packetLossPercent,
+    required this.minMs,
+    required this.maxMs,
+    required this.medianMs,
   });
 }
 
 class LatencyService {
-  static const String _defaultHost = '1.1.1.1'; // Cloudflare DNS
+  static const String _defaultHost = '1.1.1.1';
   final SpeedTestOptions options;
   final String targetHost;
   bool _isInitialized = false;
 
   LatencyService(this.options, {this.targetHost = _defaultHost});
 
-  /// Initialize platform-specific ping support
   Future<void> _initialize() async {
     if (_isInitialized) return;
-
     if (Platform.isIOS) {
       try {
         DartPingIOS.register();
-        _isInitialized = true;
-      } catch (e) {
-        // iOS ping registration failed, but continue
-        _isInitialized = true;
+      } catch (_) {
+        // iOS ping registration failed, continue
       }
-    } else {
-      _isInitialized = true;
     }
+    _isInitialized = true;
   }
 
   Future<LatencyResult> measureLatency({
+    required CancelToken cancelToken, // CHANGED: CancelToken
     void Function(LatencySample sample)? onSample,
-    Future<void>? cancelToken,
   }) async {
     await _initialize();
 
@@ -54,66 +57,73 @@ class LatencyService {
     final startTime = DateTime.now();
     int failedSamples = 0;
 
-    // Warmup: discard first sample to establish connection
-    try {
-      await _measureSinglePing();
-      await Future.delayed(const Duration(milliseconds: 100));
-    } catch (e) {
-      // Warmup failure is acceptable
+    // Warmup: discard first pingWarmupCount samples
+    for (int w = 0; w < options.pingWarmupCount; w++) {
+      // CHANGED: pingWarmupCount
+      cancelToken.throwIfCanceled();
+      try {
+        await cancelToken.race(_measureSinglePing());
+        await Future.delayed(const Duration(milliseconds: 100));
+      } on SpeedTestCanceledException {
+        rethrow;
+      } catch (_) {
+        // Warmup failure is acceptable
+      }
     }
 
-    for (int i = 0; i < options.pingSamples; i++) {
-      if (cancelToken != null) {
-        final race = await Future.any([
-          Future.value(false),
-          cancelToken.then((_) => true),
-        ]);
-        if (race) throw Exception('Canceled');
-      }
+    for (int i = 0; i < options.pingCount; i++) {
+      // CHANGED: pingCount
+      cancelToken.throwIfCanceled();
 
       try {
-        final rtt = await _measureSinglePing();
+        final rtt = await cancelToken.race(_measureSinglePing());
         samples.add(rtt);
 
         final elapsed = DateTime.now().difference(startTime).inMilliseconds;
         onSample?.call(LatencySample(timestampMs: elapsed, rttMs: rtt));
-      } catch (e) {
+      } on SpeedTestCanceledException {
+        rethrow;
+      } catch (_) {
         failedSamples++;
       }
 
-      // Small delay between pings
-      if (i < options.pingSamples - 1) {
+      if (i < options.pingCount - 1) {
+        // CHANGED: pingCount
         await Future.delayed(const Duration(milliseconds: 100));
       }
     }
 
     if (samples.isEmpty) {
-      throw Exception('All ping samples failed');
+      throw SpeedTestPhaseException(
+        'ping',
+        'All ${options.pingCount} ping samples failed', // CHANGED: pingCount
+      );
     }
 
-    // Use trimmed mean to remove outliers
+    final sorted = List<double>.from(samples)..sort();
+    final minMs = sorted.first;
+    final maxMs = sorted.last;
+    final medianMs = _calculateMedian(sorted);
     final latency = _calculateTrimmedMean(samples, trimPercent: 0.1);
     final jitter = _calculateJitter(samples);
-    final packetLoss = (failedSamples / options.pingSamples) * 100;
+    final packetLoss =
+        (failedSamples / options.pingCount) * 100; // CHANGED: pingCount
 
     return LatencyResult(
       latencyMs: latency,
       jitterMs: jitter,
       packetLossPercent: packetLoss,
+      minMs: minMs,
+      maxMs: maxMs,
+      medianMs: medianMs,
     );
   }
 
-  /// Measure single ping using ICMP
   Future<double> _measureSinglePing() async {
     final completer = Completer<double>();
     bool hasResponse = false;
 
-    final ping = Ping(
-      targetHost,
-      count: 1,
-      timeout: 2, // 2 second timeout
-      interval: 1,
-    );
+    final ping = Ping(targetHost, count: 1, timeout: 2, interval: 1);
 
     final timeoutTimer = Timer(const Duration(milliseconds: 2500), () {
       if (!completer.isCompleted) {
@@ -125,22 +135,22 @@ class LatencyService {
 
     subscription = ping.stream.listen(
       (event) {
-        if (event.response != null && event.response!.time != null) {
+        if (event.response != null &&
+            event.response!.time != null &&
+            !hasResponse) {
           final latency = event.response!.time!.inMicroseconds / 1000.0;
-
-          if (latency > 0 && latency < 2000 && !hasResponse) {
+          if (latency > 0 && latency < 2000) {
             hasResponse = true;
             timeoutTimer.cancel();
             subscription?.cancel();
-
             if (!completer.isCompleted) {
               completer.complete(latency);
             }
           }
-        } else if (event.error != null) {
-          if (!hasResponse && !completer.isCompleted) {
-            timeoutTimer.cancel();
-            subscription?.cancel();
+        } else if (event.error != null && !hasResponse) {
+          timeoutTimer.cancel();
+          subscription?.cancel();
+          if (!completer.isCompleted) {
             completer.completeError(Exception('Ping error: ${event.error}'));
           }
         }
@@ -151,10 +161,10 @@ class LatencyService {
           completer.completeError(Exception('Ping completed without response'));
         }
       },
-      onError: (e) {
+      onError: (Object e) {
+        timeoutTimer.cancel();
+        subscription?.cancel();
         if (!completer.isCompleted) {
-          timeoutTimer.cancel();
-          subscription?.cancel();
           completer.completeError(e);
         }
       },
@@ -165,23 +175,48 @@ class LatencyService {
       return await completer.future;
     } finally {
       timeoutTimer.cancel();
-      subscription.cancel();
+      await subscription.cancel();
     }
   }
 
-  /// Calculate median (robust to outliers)
+  Future<double?> measureLoadedLatency({
+    required CancelToken cancelToken, // CHANGED: CancelToken
+  }) async {
+    await _initialize();
+
+    final samples = <double>[];
+
+    for (int i = 0; i < options.loadedLatencyPings; i++) {
+      // CHANGED: loadedLatencyPings
+      if (cancelToken.isCanceled) break;
+
+      try {
+        final rtt = await _measureSinglePing();
+        samples.add(rtt);
+      } catch (_) {
+        // Ignore failures under load
+      }
+
+      if (i < options.loadedLatencyPings - 1) {
+        // CHANGED: loadedLatencyPings
+        await Future.delayed(
+          options.loadedLatencyInterval,
+        ); // CHANGED: loadedLatencyInterval
+      }
+    }
+
+    if (samples.isEmpty) return null;
+    return _calculateTrimmedMean(samples, trimPercent: 0.1);
+  }
+
   double _calculateMedian(List<double> values) {
     if (values.isEmpty) return 0;
     final sorted = List<double>.from(values)..sort();
     final mid = sorted.length ~/ 2;
-    if (sorted.length.isOdd) {
-      return sorted[mid];
-    } else {
-      return (sorted[mid - 1] + sorted[mid]) / 2;
-    }
+    if (sorted.length.isOdd) return sorted[mid];
+    return (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
-  /// Calculate trimmed mean (removes outliers from both ends)
   double _calculateTrimmedMean(
     List<double> values, {
     double trimPercent = 0.1,
@@ -193,7 +228,6 @@ class LatencyService {
     final trimCount = (sorted.length * trimPercent).floor();
 
     if (trimCount == 0) {
-      // If trim count is 0, just use mean
       return sorted.reduce((a, b) => a + b) / sorted.length;
     }
 
@@ -203,47 +237,14 @@ class LatencyService {
     return trimmed.reduce((a, b) => a + b) / trimmed.length;
   }
 
-  /// Calculate jitter using consecutive differences
   double _calculateJitter(List<double> values) {
     if (values.length < 2) return 0;
-
     double totalDelta = 0;
     int count = 0;
-
     for (int i = 1; i < values.length; i++) {
       totalDelta += (values[i] - values[i - 1]).abs();
       count++;
     }
-
     return count > 0 ? totalDelta / count : 0;
-  }
-
-  /// Measure loaded latency during download/upload
-  Future<double?> measureLoadedLatency({Future<void>? cancelToken}) async {
-    await _initialize();
-
-    final samples = <double>[];
-
-    for (int i = 0; i < options.loadedLatencySamples; i++) {
-      if (cancelToken != null) {
-        final race = await Future.any([
-          Future.value(false),
-          cancelToken.then((_) => true),
-        ]);
-        if (race) return null;
-      }
-
-      try {
-        final rtt = await _measureSinglePing();
-        samples.add(rtt);
-      } catch (e) {
-        // Ignore failures under load
-      }
-
-      await Future.delayed(const Duration(milliseconds: 150));
-    }
-
-    if (samples.isEmpty) return null;
-    return _calculateTrimmedMean(samples, trimPercent: 0.1);
   }
 }

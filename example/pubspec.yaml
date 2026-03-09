@@ -18,9 +18,7 @@ dependencies:
     sdk: flutter
 
   flutter_http_speedtest:
-    git:
-      url: https://github.com/iqbalnova/flutter_http_speedtest.git
-      ref: 0.0.3
+    path: ../
   flutter_network_diagnostics:
     git:
       url: https://github.com/iqbalnova/flutter_network_diagnostics.git

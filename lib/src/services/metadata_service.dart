@@ -1,10 +1,16 @@
+// lib/src/services/metadata_service.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../cancel_token.dart';
 import '../models/metadata.dart';
 import '../models/speed_test_options.dart';
+import '../models/exceptions.dart';
 
+/// Fetches network metadata from Cloudflare's `/meta` and `/cdn-cgi/trace`
+/// endpoints, merging both for maximum coverage.
 class MetadataService {
   static const String _endpoint = 'speed.cloudflare.com';
   static const String _metaPath = '/meta';
@@ -14,42 +20,48 @@ class MetadataService {
 
   MetadataService(this.options);
 
-  Future<NetworkMetadata> fetchMetadata() async {
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 3);
+  /// Fetch metadata, racing against [cancelToken].
+  Future<NetworkMetadata> fetchMetadata({
+    required CancelToken cancelToken,
+  }) async {
+    final client = options.createHttpClient();
 
     try {
       NetworkMetadata? metaResult;
       NetworkMetadata? traceResult;
 
-      // 1️⃣ Try /meta first
+      // 1. Try /meta
       try {
-        final metaResponse = await _get(client, _metaPath);
-        metaResult = _parseMeta(metaResponse);
+        final body = await cancelToken.race(_get(client, _metaPath));
+        metaResult = _parseMeta(body);
+      } on SpeedTestCanceledException {
+        rethrow;
       } catch (_) {
-        // ignore, fallback later
+        // Fall through to trace
       }
 
-      // 2️⃣ If meta incomplete or failed → fallback to trace
+      cancelToken.throwIfCanceled();
+
+      // 2. Fallback to /cdn-cgi/trace if meta is incomplete
       if (metaResult == null || _needsTraceFallback(metaResult)) {
         try {
-          final traceResponse = await _get(client, _tracePath);
-          traceResult = _parseTrace(traceResponse);
+          final body = await cancelToken.race(_get(client, _tracePath));
+          traceResult = _parseTrace(body);
+        } on SpeedTestCanceledException {
+          rethrow;
         } catch (_) {
-          // ignore
+          // Ignore
         }
       }
 
-      // 3️⃣ Merge results (meta first, trace as fallback)
       return _merge(metaResult, traceResult);
     } finally {
-      client.close();
+      client.close(force: true);
     }
   }
 
-  // -----------------------
-  // HTTP helper
-  // -----------------------
+  // ── HTTP helper ──────────────────────────────────────────────────────
+
   Future<String> _get(HttpClient client, String path) async {
     final request = await client
         .getUrl(Uri.https(_endpoint, path))
@@ -64,32 +76,33 @@ class MetadataService {
 
     final response = await request.close().timeout(const Duration(seconds: 3));
 
-    final body = await response.transform(utf8.decoder).join();
-
-    print('GET $path (${response.statusCode}): $body');
-
-    if (response.statusCode != 200) {
-      throw Exception('Request failed: $path');
+    if (response.statusCode == 429) {
+      await response.drain<void>();
+      throw SpeedTestRateLimitException();
     }
 
-    return body; // RETURN BODY, BUKAN STREAM LAGI
+    final body = await response.transform(utf8.decoder).join();
+
+    if (response.statusCode != 200) {
+      throw HttpException('Request failed ($path): ${response.statusCode}');
+    }
+
+    return body;
   }
 
-  // -----------------------
-  // Parsing
-  // -----------------------
+  // ── Parsing ──────────────────────────────────────────────────────────
 
   NetworkMetadata _parseMeta(String body) {
     final json = jsonDecode(body) as Map<String, dynamic>;
 
-    final ip = json['clientIp'];
+    final ip = json['clientIp'] as String?;
     final asn = json['asn']?.toString();
-    final network = json['asOrganization'];
-    final country = json['country'];
+    final network = json['asOrganization'] as String?;
+    final country = json['country'] as String?;
 
     final coloObj = json['colo'] as Map<String, dynamic>?;
-    final coloCode = coloObj?['iata']; // CGK
-    final coloCity = coloObj?['city']; // Jakarta
+    final coloCode = coloObj?['iata'] as String?;
+    final coloCity = coloObj?['city'] as String?;
 
     return NetworkMetadata(
       ipAddress: ip,
@@ -97,18 +110,14 @@ class MetadataService {
       networkName: network,
       asn: asn,
       country: country,
-
-      /// ✅ SERVER LOCATION HARUS DARI COLO
       serverLocation: coloCity ?? coloCode,
       colo: coloCode,
     );
   }
 
   NetworkMetadata _parseTrace(String body) {
-    final lines = body.split('\n');
     final data = <String, String>{};
-
-    for (final line in lines) {
+    for (final line in body.split('\n')) {
       final parts = line.split('=');
       if (parts.length == 2) {
         data[parts[0].trim()] = parts[1].trim();
@@ -129,13 +138,14 @@ class MetadataService {
     );
   }
 
-  // -----------------------
-  // Merge logic
-  // -----------------------
+  // ── Merge ────────────────────────────────────────────────────────────
 
   NetworkMetadata _merge(NetworkMetadata? meta, NetworkMetadata? trace) {
     if (meta == null && trace == null) {
-      throw Exception('Failed to fetch network metadata');
+      throw SpeedTestPhaseException(
+        'metadata',
+        'Failed to fetch network metadata from both endpoints',
+      );
     }
 
     return NetworkMetadata(
@@ -158,9 +168,7 @@ class MetadataService {
         meta.serverLocation == null;
   }
 
-  // -----------------------
-  // Helpers
-  // -----------------------
+  // ── Helpers ──────────────────────────────────────────────────────────
 
   String? _detectIpVersion(String ip) {
     if (ip.contains(':')) return 'IPv6';
@@ -170,8 +178,7 @@ class MetadataService {
 
   String? _mapColoToCity(String? colo) {
     if (colo == null) return null;
-
-    const coloMap = {
+    const map = {
       'SIN': 'Singapore',
       'HKG': 'Hong Kong',
       'NRT': 'Tokyo',
@@ -192,7 +199,6 @@ class MetadataService {
       'BOM': 'Mumbai',
       'DEL': 'Delhi',
     };
-
-    return coloMap[colo.toUpperCase()];
+    return map[colo.toUpperCase()];
   }
 }

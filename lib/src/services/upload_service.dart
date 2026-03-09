@@ -4,167 +4,194 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math' as math;
+
+import '../cancel_token.dart';
 import '../models/speed_test_options.dart';
 import '../models/sample.dart';
+import '../models/exceptions.dart';
 
+/// Upload speed measurement — chunk-based sequential POST.
+///
+/// Sends data in 32 KB chunks via a single POST request, sampling
+/// throughput at regular intervals. Uses the old p90-trimmed average
+/// aggregation for the final result.
 class UploadService {
   static const String _endpoint = 'speed.cloudflare.com';
+
   final SpeedTestOptions options;
 
   UploadService(this.options);
 
+  /// Run the upload measurement.
+  ///
+  /// Returns the final upload speed in Mbit/s.
   Future<double> measureUpload({
-    required int bytes,
+    required CancelToken cancelToken,
     void Function(SpeedSample sample)? onSample,
-    Future<void>? cancelToken,
   }) async {
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 5);
+    cancelToken.throwIfCanceled();
 
-    // 🔥 Store all samples for final calculation (same as download)
-    final List<SpeedSample> samples = [];
+    // Derive max bytes from duration (assume 10 MB/s ceiling)
+    final maxBytes = options.uploadDuration.inSeconds * 10 * 1024 * 1024;
+
+    final client = options.createHttpClient();
+    final samples = <SpeedSample>[];
+
+    double ema = 0;
+    bool emaInit = false;
 
     try {
       final uri = Uri.https(_endpoint, '/__up');
-      final request = await client.postUrl(uri).timeout(options.uploadTimeout);
+      final request = await cancelToken.race(
+        client
+            .postUrl(uri)
+            .timeout(options.uploadDuration + const Duration(seconds: 5)),
+      );
 
       final stopwatch = Stopwatch()..start();
 
-      // Use smaller chunks and add delays to make upload measurable
-      const chunkSize = 32 * 1024; // 32KB chunks (smaller for more samples)
+      const chunkSize = 32 * 1024; // 32 KB
       int sentBytes = 0;
       int lastSampleBytes = 0;
       int lastSampleTime = 0;
-      final buffer = Uint8List(chunkSize);
-
-      // Track samples to ensure we send at least a few
       int samplesSent = 0;
 
-      while (sentBytes < bytes) {
-        if (cancelToken != null) {
-          final race = await Future.any([
-            Future.value(false),
-            cancelToken.then((_) => true),
-          ]);
-          if (race) {
-            await request.close();
-            throw Exception('Canceled');
-          }
-        }
+      final buffer = Uint8List(chunkSize);
 
-        final remaining = bytes - sentBytes;
+      while (sentBytes < maxBytes) {
+        // ── Cancel check ──────────────────────────────────────
+        cancelToken.throwIfCanceled();
+
+        // ── Duration check ────────────────────────────────────
+        if (stopwatch.elapsed >= options.uploadDuration) break;
+
+        final remaining = maxBytes - sentBytes;
         final toSend = math.min(remaining, chunkSize);
 
         request.add(buffer.sublist(0, toSend));
         sentBytes += toSend;
 
-        // Small delay to allow network transmission and event loop processing
-        // This ensures samples are actually sent at meaningful intervals
+        // Yield to event loop so network stack can flush
         await Future.delayed(const Duration(milliseconds: 5));
+
+        cancelToken.throwIfCanceled();
 
         final elapsed = stopwatch.elapsedMilliseconds;
 
-        // Calculate speed at intervals OR force samples if too few
+        // ── Sampling ──────────────────────────────────────────
         final shouldSample =
-            elapsed - lastSampleTime >= options.sampleInterval.inMilliseconds;
-        final needMoreSamples =
-            samplesSent < 3 && elapsed > 100; // Ensure minimum samples
+            elapsed - lastSampleTime >= options.sampleIntervalMs;
+        final needMoreSamples = samplesSent < 3 && elapsed > 100;
 
         if (shouldSample || needMoreSamples) {
           final bytesInInterval = sentBytes - lastSampleBytes;
           final timeInInterval = math.max(1, elapsed - lastSampleTime) / 1000.0;
           final mbps = (bytesInInterval * 8) / (timeInInterval * 1000000);
 
-          // Only send meaningful samples (avoid division by zero or extreme values)
           if (mbps > 0 && mbps < 10000) {
-            final sample = SpeedSample(timestampMs: elapsed, mbps: mbps);
+            // ── EMA smoothing ────────────────────────────────
+            if (!emaInit) {
+              ema = mbps;
+              emaInit = true;
+            } else {
+              ema = options.emaAlpha * mbps + (1 - options.emaAlpha) * ema;
+            }
 
-            // 🔥 Store sample for final calculation
+            final sample = SpeedSample(
+              timestampMs: elapsed,
+              mbps: mbps,
+              smoothedMbps: ema,
+            );
+
             samples.add(sample);
-
             onSample?.call(sample);
             samplesSent++;
 
             lastSampleBytes = sentBytes;
             lastSampleTime = elapsed;
 
-            // Critical: yield to event loop so UI can update
+            // Yield so UI can update
             await Future.delayed(Duration.zero);
           }
         }
       }
 
-      // Wait for server to acknowledge receipt
-      final response = await request.close().timeout(options.uploadTimeout);
-      await response.drain();
+      // Flush and wait for server ACK
+      final response = await cancelToken.race(
+        request.close().timeout(
+          options.uploadDuration + const Duration(seconds: 5),
+        ),
+      );
+      await response.drain<void>();
 
       stopwatch.stop();
 
-      // 🔥 CALCULATE FINAL SPEED USING SAME ALGORITHM AS DOWNLOAD
+      // ── Final aggregation ──────────────────────────────────
       final finalMbps = _calculateFinalMbps(samples);
 
-      // Send final sample to show completion (using calculated final speed)
+      // Emit final sample
       if (finalMbps > 0) {
         onSample?.call(
           SpeedSample(
             timestampMs: stopwatch.elapsedMilliseconds,
             mbps: finalMbps,
+            smoothedMbps: finalMbps,
           ),
         );
       }
 
       return finalMbps;
+    } on SpeedTestCanceledException {
+      rethrow;
+    } on TimeoutException {
+      rethrow;
+    } on SocketException {
+      rethrow;
+    } catch (e) {
+      rethrow;
     } finally {
-      client.close();
+      client.close(force: true);
     }
   }
 
-  /// ============================
-  /// FINAL SPEED AGGREGATION LOGIC
-  /// (Identical to DownloadService)
-  /// ============================
+  // ══════════════════════════════════════════════════════════════════
+  // Aggregation — p90 trimmed average (kept from old service)
+  // ══════════════════════════════════════════════════════════════════
 
+  /// Aggregates samples using p90-trimmed average:
+  /// 1. Discard bottom 30 % warmup samples.
+  /// 2. Sort remaining values.
+  /// 3. Use p90 as spike ceiling (clamp at p90 × 1.2).
+  /// 4. Average the clamped values.
   double _calculateFinalMbps(List<SpeedSample> samples) {
-    if (samples.isEmpty) {
-      // Fallback: no samples collected
-      return 0.0;
-    }
+    if (samples.isEmpty) return 0.0;
 
-    // If we have very few samples, just return the average
     if (samples.length < 3) {
-      final avg =
-          samples.map((e) => e.mbps).reduce((a, b) => a + b) / samples.length;
-      return avg;
+      return samples.map((e) => e.mbps).reduce((a, b) => a + b) /
+          samples.length;
     }
 
-    // 🔹 1. Buang warm-up awal (30%)
+    // Step 1: Discard bottom 30% (warmup)
     final startIndex = (samples.length * 0.3).round();
     final stableSamples = samples.length > startIndex
         ? samples.sublist(startIndex)
         : samples;
 
-    if (stableSamples.isEmpty) {
-      return samples.last.mbps;
-    }
+    if (stableSamples.isEmpty) return samples.last.mbps;
 
-    // 🔹 2. Ambil nilai Mbps saja
-    final values = stableSamples.map((e) => e.mbps).toList();
+    // Step 2: Extract and sort Mbps values
+    final values = stableSamples.map((e) => e.mbps).toList()..sort();
 
-    // Sort ascending
-    values.sort();
-
-    // 🔹 3. Ambil percentile 90 sebagai peak reference
+    // Step 3: p90 as peak reference
     final p90Index = (values.length * 0.9).round().clamp(0, values.length - 1);
     final p90 = values[p90Index];
 
-    // 🔹 4. Clamp spike ekstrem (anti burst buffer)
+    // Step 4: Filter spikes above p90 × 1.2
     final filtered = values.where((v) => v <= p90 * 1.2).toList();
-
     final used = filtered.isNotEmpty ? filtered : values;
 
-    // 🔹 5. Average stable window
+    // Step 5: Average
     final avg = used.reduce((a, b) => a + b) / used.length;
-
-    return avg;
+    return double.parse(avg.toStringAsFixed(2));
   }
 }

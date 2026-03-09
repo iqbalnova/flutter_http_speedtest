@@ -6,18 +6,35 @@ import 'phase_status.dart';
 import 'sample.dart';
 import 'enums.dart';
 
+/// Complete result of a speed test run.
 class SpeedTestResult {
+  // ── Speed ────────────────────────────────────────────────────────────
   final double? downloadMbps;
   final double? uploadMbps;
+
+  // ── Latency ──────────────────────────────────────────────────────────
   final double? latencyMs;
   final double? jitterMs;
   final double? packetLossPercent;
+  final double? latencyMinMs;
+  final double? latencyMaxMs;
+  final double? latencyMedianMs;
+
+  // ── Loaded latency (bufferbloat) ────────────────────────────────────
   final double? loadedLatencyMs;
+
+  // ── Metadata ────────────────────────────────────────────────────────
   final NetworkMetadata? metadata;
+
+  // ── Time-series ─────────────────────────────────────────────────────
   final List<SpeedSample> downloadSeries;
   final List<SpeedSample> uploadSeries;
   final List<LatencySample> latencySeries;
+
+  // ── Quality ─────────────────────────────────────────────────────────
   final NetworkQuality quality;
+
+  // ── Phase statuses ──────────────────────────────────────────────────
   final Map<TestPhase, PhaseStatus> phaseStatuses;
 
   SpeedTestResult({
@@ -26,6 +43,9 @@ class SpeedTestResult {
     this.latencyMs,
     this.jitterMs,
     this.packetLossPercent,
+    this.latencyMinMs,
+    this.latencyMaxMs,
+    this.latencyMedianMs,
     this.loadedLatencyMs,
     this.metadata,
     required this.downloadSeries,
@@ -41,44 +61,45 @@ class SpeedTestResult {
 
   @override
   String toString() {
-    final buffer = StringBuffer('SpeedTestResult:\n');
-    buffer.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
+    final b = StringBuffer('SpeedTestResult:\n');
+    b.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     if (downloadMbps != null) {
-      buffer.writeln('Download: ${downloadMbps!.toStringAsFixed(2)} Mbps');
+      b.writeln('Download : ${downloadMbps!.toStringAsFixed(2)} Mbps');
     }
     if (uploadMbps != null) {
-      buffer.writeln('Upload: ${uploadMbps!.toStringAsFixed(2)} Mbps');
+      b.writeln('Upload   : ${uploadMbps!.toStringAsFixed(2)} Mbps');
     }
-
-    buffer.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
+    b.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     if (latencyMs != null) {
-      buffer.writeln('Latency: ${latencyMs!.toStringAsFixed(1)} ms');
+      b.writeln('Latency  : ${latencyMs!.toStringAsFixed(1)} ms');
+    }
+    if (latencyMinMs != null) {
+      b.writeln('  Min    : ${latencyMinMs!.toStringAsFixed(1)} ms');
+    }
+    if (latencyMaxMs != null) {
+      b.writeln('  Max    : ${latencyMaxMs!.toStringAsFixed(1)} ms');
+    }
+    if (latencyMedianMs != null) {
+      b.writeln('  Median : ${latencyMedianMs!.toStringAsFixed(1)} ms');
     }
     if (jitterMs != null) {
-      buffer.writeln('Jitter: ${jitterMs!.toStringAsFixed(1)} ms');
+      b.writeln('Jitter   : ${jitterMs!.toStringAsFixed(1)} ms');
     }
     if (packetLossPercent != null) {
-      buffer.writeln('Packet Loss: ${packetLossPercent!.toStringAsFixed(1)}%');
+      b.writeln('Loss     : ${packetLossPercent!.toStringAsFixed(1)} %');
     }
     if (loadedLatencyMs != null) {
-      buffer.writeln(
-        'Loaded Latency: ${loadedLatencyMs!.toStringAsFixed(1)} ms',
-      );
+      b.writeln('Loaded   : ${loadedLatencyMs!.toStringAsFixed(1)} ms');
     }
-
-    buffer.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    buffer.writeln('Quality Scores:');
-    buffer.writeln('  ${quality.streaming}');
-    buffer.writeln('  ${quality.gaming}');
-    buffer.writeln('  ${quality.rtc}');
-
+    b.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    b.writeln('Quality  : ${quality.overallGrade.name.toUpperCase()}');
+    b.writeln('  ${quality.streaming}');
+    b.writeln('  ${quality.gaming}');
+    b.writeln('  ${quality.rtc}');
     if (metadata != null) {
-      buffer.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      buffer.writeln(metadata);
+      b.writeln('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      b.writeln(metadata);
     }
-
-    return buffer.toString();
+    return b.toString();
   }
 }

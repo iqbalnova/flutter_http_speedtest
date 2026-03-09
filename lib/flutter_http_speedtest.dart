@@ -1,6 +1,7 @@
 // lib/flutter_http_speedtest.dart
 
 export 'src/speed_test_engine.dart';
+export 'src/cancel_token.dart';
 export 'src/models/speed_test_result.dart';
 export 'src/models/speed_test_options.dart';
 export 'src/models/metadata.dart';
