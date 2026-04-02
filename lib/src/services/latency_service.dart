@@ -181,29 +181,42 @@ class LatencyService {
 
   Future<double?> measureLoadedLatency({
     required CancelToken cancelToken, // CHANGED: CancelToken
+    Duration? maxDuration,
   }) async {
     await _initialize();
 
     final samples = <double>[];
+    final stopwatch = Stopwatch()..start();
 
     for (int i = 0; i < options.loadedLatencyPings; i++) {
       // CHANGED: loadedLatencyPings
       if (cancelToken.isCanceled) break;
+      if (maxDuration != null && stopwatch.elapsed >= maxDuration) break;
 
       try {
-        final rtt = await _measureSinglePing();
+        final rtt = await cancelToken.race(_measureSinglePing());
         samples.add(rtt);
+      } on SpeedTestCanceledException {
+        rethrow;
       } catch (_) {
         // Ignore failures under load
       }
 
       if (i < options.loadedLatencyPings - 1) {
         // CHANGED: loadedLatencyPings
-        await Future.delayed(
-          options.loadedLatencyInterval,
-        ); // CHANGED: loadedLatencyInterval
+        try {
+          await cancelToken.race(
+            Future<void>.delayed(options.loadedLatencyInterval),
+          );
+        } on SpeedTestCanceledException {
+          rethrow;
+        }
       }
+
+      if (maxDuration != null && stopwatch.elapsed >= maxDuration) break;
     }
+
+    stopwatch.stop();
 
     if (samples.isEmpty) return null;
     return _calculateTrimmedMean(samples, trimPercent: 0.1);

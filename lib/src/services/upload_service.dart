@@ -71,8 +71,10 @@ class UploadService {
         request.add(buffer.sublist(0, toSend));
         sentBytes += toSend;
 
-        // Yield to event loop so network stack can flush
-        await Future.delayed(const Duration(milliseconds: 5));
+        // ── Enforce Backpressure ──────────────────────────────
+        // Wait for the data to actually flush to the OS socket.
+        // This prevents memory bloat and the timeout on request.close().
+        await request.flush();
 
         cancelToken.throwIfCanceled();
 
