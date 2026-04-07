@@ -200,7 +200,10 @@ class SpeedTestEngine {
       final llFuture = latencyService.measureLoadedLatency(cancelToken: ct);
 
       final results = await Future.wait<Object?>([dlFuture, llFuture]);
-      downloadMbps = results[0] as double;
+      final dlResult =
+          results[0] as ({double trimmedMbps, double smoothedMbps});
+      // U can use either trimmedMbps or smoothedMbps
+      downloadMbps = dlResult.smoothedMbps;
       loadedLatencyMs = results[1] as double?;
 
       _emit(TestPhase.download, const PhaseStatus.success(), statuses);

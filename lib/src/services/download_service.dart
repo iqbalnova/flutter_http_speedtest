@@ -9,48 +9,28 @@ import '../models/speed_test_options.dart';
 import '../models/sample.dart';
 import '../models/exceptions.dart';
 
-/// Download speed measurement using the official Ookla methodology.
-///
-/// 1. **Pre-test** — single-stream 512 KB probe to estimate line speed.
-/// 2. **Real test** — multi-stream, duration-based, with adaptive thread
-///    scaling in the first half and high-frequency sampling (30 Hz).
-/// 3. **Aggregation** — 20-slice trimmed mean (remove top 2, bottom 25 %).
 class DownloadService {
   static const String _endpoint = 'speed.cloudflare.com';
+  static const int _scaleUpCooldownMs = 1000;
 
   final SpeedTestOptions options;
 
   DownloadService(this.options);
 
-  /// Run the full Ookla-style download measurement.
-  ///
-  /// Returns the final download speed in Mbit/s.
-  Future<double> measureDownload({
+  Future<({double trimmedMbps, double smoothedMbps})> measureDownload({
     required CancelToken cancelToken,
     void Function(SpeedSample sample)? onSample,
   }) async {
-    // ── Phase A: Pre-test (speed estimation) ───────────────────────
     cancelToken.throwIfCanceled();
     final estimatedMbps = await _preTest(cancelToken);
 
     cancelToken.throwIfCanceled();
 
-    // Select chunk size based on estimated speed
-    final int chunkSize;
-    if (estimatedMbps < 1) {
-      chunkSize = 256 * 1024; // 256 KB
-    } else if (estimatedMbps <= 10) {
-      chunkSize = 1024 * 1024; // 1 MB
-    } else {
-      chunkSize = 4 * 1024 * 1024; // 4 MB
-    }
-
-    // Select initial thread count
+    final int chunkSize = _selectChunkSize(estimatedMbps);
     final int startThreads = estimatedMbps < options.threadScaleThresholdMbps
         ? options.minThreads
         : options.maxThreads;
 
-    // ── Phase B: Real test (duration-based, multi-stream) ──────────
     cancelToken.throwIfCanceled();
     final rawSamples = await _realTest(
       cancelToken: cancelToken,
@@ -59,21 +39,31 @@ class DownloadService {
       onSample: onSample,
     );
 
-    // ── Phase C: Ookla 20-slice aggregation ────────────────────────
-    return _calculateDownloadMbps(rawSamples);
+    final trimmed = _calculateDownloadMbps(rawSamples);
+
+    const windowSize = 15;
+    final window = rawSamples.length <= windowSize
+        ? rawSamples
+        : rawSamples.sublist(rawSamples.length - windowSize);
+    final smoothed = window.isEmpty
+        ? trimmed
+        : window.reduce((a, b) => a + b) / window.length;
+
+    return (trimmedMbps: trimmed, smoothedMbps: smoothed);
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // Phase A — Pre-test
-  // ══════════════════════════════════════════════════════════════════
+  int _selectChunkSize(double estimatedMbps) {
+    if (estimatedMbps < 1) return 256 * 1024;
+    if (estimatedMbps <= 10) return 1024 * 1024;
+    return 4 * 1024 * 1024;
+  }
 
   Future<double> _preTest(CancelToken cancelToken) async {
     final client = options.createHttpClient();
     try {
-      final cacheBust = math.Random().nextInt(999999999);
       final uri = Uri.https(_endpoint, '/__down', {
         'bytes': options.preTestBytes.toString(),
-        '_': cacheBust.toString(),
+        '_': math.Random().nextInt(999999999).toString(),
       });
 
       final request = await cancelToken.race(
@@ -90,27 +80,21 @@ class DownloadService {
 
       int bytes = 0;
       final sw = Stopwatch()..start();
-
       await for (final chunk in response) {
         cancelToken.throwIfCanceled();
         bytes += chunk.length;
       }
-
       sw.stop();
       final secs = sw.elapsedMicroseconds / 1e6;
-      if (secs <= 0) return 0;
-      return (bytes * 8) / (secs * 1e6); // Mbit/s
+      if (secs <= 0 || bytes == 0) return 0;
+      return (bytes * 8) / (secs * 1e6);
     } catch (e) {
       if (e is SpeedTestCanceledException) rethrow;
-      return 0; // Fallback: assume slow
+      return 0;
     } finally {
       client.close(force: true);
     }
   }
-
-  // ══════════════════════════════════════════════════════════════════
-  // Phase B — Real test
-  // ══════════════════════════════════════════════════════════════════
 
   Future<List<double>> _realTest({
     required CancelToken cancelToken,
@@ -122,23 +106,29 @@ class DownloadService {
     final intervalMs = options.sampleIntervalMs;
     final rawSamples = <double>[];
 
-    // Shared mutable state — main isolate only.
+    // Single-writer byte counter via stream listener — no concurrent mutation.
+    final byteStream = StreamController<int>.broadcast();
     int totalBytes = 0;
+    byteStream.stream.listen((n) => totalBytes += n);
+
     int currentThreads = startThreads;
     bool threadScaleLocked = false;
     int adaptiveChunkSize = chunkSize;
+    int lastScaleUpMs = 0;
 
     final clients = <HttpClient>[];
     final activeFutures = <Future<void>>[];
-
     final stopwatch = Stopwatch()..start();
-    int lastSampleBytes = 0;
-    int lastSampleTimeUs = 0;
 
+    int lastSnapshotBytes = 0;
+    int lastSnapshotUs = 0;
+
+    // EMA hanya dipakai sebagai fallback saat sample < 3
+    // (belum cukup data untuk windowed average yang meaningful)
     double ema = 0;
     bool emaInit = false;
+    const double emaAlpha = 0.3;
 
-    // ── Helper: launch one download stream ────────────────────────
     void launchStream() {
       final client = options.createHttpClient();
       clients.add(client);
@@ -149,88 +139,93 @@ class DownloadService {
           stopwatch: stopwatch,
           duration: duration,
           getChunkSize: () => adaptiveChunkSize,
-          onChunk: (int n) {
-            totalBytes += n;
-          },
+          onChunk: byteStream.add,
         ),
       );
     }
 
     try {
-      // Launch initial threads
       for (int i = 0; i < startThreads; i++) {
         cancelToken.throwIfCanceled();
         launchStream();
       }
 
-      // ── Sampling timer ──────────────────────────────────────────
       final samplingDone = Completer<void>();
+
       final timer = Timer.periodic(Duration(milliseconds: intervalMs), (t) {
+        // Snapshot FIRST — before any other work or check.
+        final nowUs = stopwatch.elapsedMicroseconds;
+        final elapsedMs = nowUs ~/ 1000;
+        final snapshotBytes = totalBytes;
+
         if (cancelToken.isCanceled ||
-            stopwatch.elapsed >= duration ||
+            elapsedMs >= duration.inMilliseconds ||
             samplingDone.isCompleted) {
           t.cancel();
           if (!samplingDone.isCompleted) samplingDone.complete();
           return;
         }
 
-        final nowUs = stopwatch.elapsedMicroseconds;
-        final bytesInInterval = totalBytes - lastSampleBytes;
-        final usInInterval = nowUs - lastSampleTimeUs;
+        final bytesInInterval = snapshotBytes - lastSnapshotBytes;
+        final usInInterval = nowUs - lastSnapshotUs;
 
         if (usInInterval > 0 && bytesInInterval > 0) {
           final secs = usInInterval / 1e6;
           final mbps = (bytesInInterval * 8) / (secs * 1e6);
+
           rawSamples.add(mbps);
 
-          // EMA for UI
           if (!emaInit) {
             ema = mbps;
             emaInit = true;
           } else {
-            ema = options.emaAlpha * mbps + (1 - options.emaAlpha) * ema;
+            ema = emaAlpha * mbps + (1 - emaAlpha) * ema;
           }
 
-          final sample = SpeedSample(
-            timestampMs: stopwatch.elapsedMilliseconds,
-            mbps: mbps,
-            smoothedMbps: ema,
-          );
-          onSample?.call(sample);
+          // Dengan windowed average (15 sample terakhir ≈ 500ms pada 30Hz):
+          const int windowSize = 15;
+          final double smoothed;
+          if (rawSamples.length < 3) {
+            smoothed = ema;
+          } else {
+            final window = rawSamples.length <= windowSize
+                ? rawSamples
+                : rawSamples.sublist(rawSamples.length - windowSize);
+            smoothed = window.reduce((a, b) => a + b) / window.length;
+          }
 
-          // ── Thread scaling (first half only) ──────────────────
+          onSample?.call(
+            SpeedSample(
+              timestampMs: elapsedMs,
+              mbps: mbps,
+              smoothedMbps: smoothed,
+            ),
+          );
+
+          // Thread scaling — first half only, 1 s cooldown, ≥3 samples.
           if (!threadScaleLocked) {
-            final halfDone =
-                stopwatch.elapsed >=
-                Duration(milliseconds: duration.inMilliseconds ~/ 2);
-            if (halfDone) {
+            final halfElapsed = elapsedMs >= duration.inMilliseconds ~/ 2;
+            if (halfElapsed) {
               threadScaleLocked = true;
-            } else if (currentThreads < options.maxThreads) {
-              // Heuristic: if current throughput is below 80 % of estimated
-              // capacity per thread, add another thread.
+            } else if (currentThreads < options.maxThreads &&
+                rawSamples.length >= 3 &&
+                elapsedMs - lastScaleUpMs >= _scaleUpCooldownMs) {
               final perThread = mbps / currentThreads;
               if (perThread < options.threadScaleThresholdMbps) {
                 currentThreads++;
                 launchStream();
+                lastScaleUpMs = elapsedMs;
               }
             }
           }
 
-          // ── Adaptive chunk size ────────────────────────────────
-          if (mbps < 1) {
-            adaptiveChunkSize = 256 * 1024;
-          } else if (mbps <= 10) {
-            adaptiveChunkSize = 1024 * 1024;
-          } else {
-            adaptiveChunkSize = 4 * 1024 * 1024;
-          }
+          adaptiveChunkSize = _selectChunkSize(mbps);
         }
 
-        lastSampleBytes = totalBytes;
-        lastSampleTimeUs = nowUs;
+        lastSnapshotBytes = snapshotBytes;
+        lastSnapshotUs = nowUs;
       });
 
-      // Wait for duration to elapse (or cancel)
       await cancelToken.race(
         Future.any([
           Future.wait(activeFutures).catchError((_) => <void>[]),
@@ -244,13 +239,13 @@ class DownloadService {
 
       return rawSamples;
     } finally {
+      await byteStream.close();
       for (final c in clients) {
         c.close(force: true);
       }
     }
   }
 
-  /// A single download stream that loops chunk requests until duration expires.
   Future<void> _downloadLoop({
     required HttpClient client,
     required CancelToken cancelToken,
@@ -261,10 +256,9 @@ class DownloadService {
   }) async {
     while (!cancelToken.isCanceled && stopwatch.elapsed < duration) {
       try {
-        final cacheBust = math.Random().nextInt(999999999);
         final uri = Uri.https(_endpoint, '/__down', {
           'bytes': getChunkSize().toString(),
-          '_': cacheBust.toString(),
+          '_': math.Random().nextInt(999999999).toString(),
         });
 
         final request = await client
@@ -286,63 +280,51 @@ class DownloadService {
       } on SpeedTestCanceledException {
         return;
       } catch (_) {
-        // Single request failure — loop retries automatically.
         await Future.delayed(const Duration(milliseconds: 50));
       }
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // Phase C — Ookla 20-slice aggregation
-  // ══════════════════════════════════════════════════════════════════
-
-  /// Exact Ookla download result aggregation.
-  ///
-  /// 1. Aggregate raw samples into 20 equal chronological slices.
-  /// 2. Sort ascending.
-  /// 3. Remove the 2 fastest (top outliers).
-  /// 4. Remove the bottom 25 % of what remains.
-  /// 5. Average the rest.
+  // Ookla 20-slice trimmed-mean.
+  // 1. Bucket raw samples into 20 equal chronological slices (floor — equal sizes).
+  // 2. Sort ascending.
+  // 3. Drop top 2 (burst outliers).
+  // 4. Drop bottom 25 % (warmup tail).
+  // 5. Average the rest.
   double _calculateDownloadMbps(List<double> rawSamples) {
     if (rawSamples.isEmpty) return 0.0;
     if (rawSamples.length == 1) return rawSamples.first;
 
-    // Step 1-2: Aggregate into 20 slices
     final slices = _aggregateInto20Slices(rawSamples);
+    if (slices.isEmpty) return rawSamples.last;
 
-    // Step 3: Sort ascending
     slices.sort();
 
-    // Step 4: Remove 2 fastest (top)
     if (slices.length <= 2) return slices.last;
     final afterTopRemoved = slices.sublist(0, slices.length - 2);
 
-    // Step 5: Remove bottom 1/4 of what remains
     final removeBottom = (afterTopRemoved.length * 0.25).round();
     final finalSlices = afterTopRemoved.sublist(removeBottom);
 
     if (finalSlices.isEmpty) return afterTopRemoved.last;
 
-    // Step 6: Average the rest
-    final result = finalSlices.reduce((a, b) => a + b) / finalSlices.length;
-    return double.parse(result.toStringAsFixed(2));
+    final avg = finalSlices.reduce((a, b) => a + b) / finalSlices.length;
+    return double.parse(avg.toStringAsFixed(2));
   }
 
   List<double> _aggregateInto20Slices(List<double> samples) {
     const sliceCount = 20;
-    final sliceSize = (samples.length / sliceCount).ceil().clamp(
-      1,
-      samples.length,
-    );
-    final slices = <double>[];
-
-    for (int i = 0; i < samples.length; i += sliceSize) {
-      final end = (i + sliceSize).clamp(0, samples.length);
-      final group = samples.sublist(i, end);
-      final avg = group.reduce((a, b) => a + b) / group.length;
-      slices.add(avg);
+    if (samples.length < sliceCount) {
+      return List<double>.from(samples);
     }
-
+    final sliceSize = samples.length ~/ sliceCount;
+    final slices = <double>[];
+    for (int i = 0; i < sliceCount; i++) {
+      final start = i * sliceSize;
+      final end = start + sliceSize;
+      final group = samples.sublist(start, end);
+      slices.add(group.reduce((a, b) => a + b) / group.length);
+    }
     return slices;
   }
 }

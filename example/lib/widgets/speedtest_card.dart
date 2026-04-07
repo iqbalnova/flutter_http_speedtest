@@ -335,9 +335,14 @@ class _SpeedValueBox extends StatelessWidget {
             return ValueListenableBuilder<List<SpeedSample>>(
               valueListenable: samplesNotifier,
               builder: (context, samples, _) {
+                // Separating onCompleted value with onSample Value
+                // final value = isDownload
+                //     ? (result?.downloadMbps ?? samples.lastOrNull?.smoothedMbps)
+                //     : (result?.uploadMbps ?? samples.lastOrNull?.smoothedMbps);
+
                 final value = isDownload
-                    ? (result?.downloadMbps ?? samples.lastOrNull?.mbps)
-                    : (result?.uploadMbps ?? samples.lastOrNull?.mbps);
+                    ? samples.lastOrNull?.smoothedMbps
+                    : samples.lastOrNull?.smoothedMbps;
 
                 return Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -438,7 +443,7 @@ class _SpeedChart extends StatelessWidget {
     final spots = samples
         .asMap()
         .entries
-        .map((e) => FlSpot(e.key.toDouble(), e.value.mbps))
+        .map((e) => FlSpot(e.key.toDouble(), e.value.smoothedMbps))
         .toList();
 
     return LineChart(
