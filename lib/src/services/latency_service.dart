@@ -1,9 +1,7 @@
 // lib/src/services/latency_service.dart
 
 import 'dart:async';
-import 'dart:io';
 import 'package:dart_ping/dart_ping.dart';
-import 'package:dart_ping_ios/dart_ping_ios.dart';
 import '../cancel_token.dart';
 import '../models/speed_test_options.dart';
 import '../models/sample.dart';
@@ -37,13 +35,6 @@ class LatencyService {
 
   Future<void> _initialize() async {
     if (_isInitialized) return;
-    if (Platform.isIOS) {
-      try {
-        DartPingIOS.register();
-      } catch (_) {
-        // iOS ping registration failed, continue
-      }
-    }
     _isInitialized = true;
   }
 
@@ -135,24 +126,27 @@ class LatencyService {
 
     subscription = ping.stream.listen(
       (event) {
-        if (event.response != null &&
-            event.response!.time != null &&
-            !hasResponse) {
-          final latency = event.response!.time!.inMicroseconds / 1000.0;
-          if (latency > 0 && latency < 2000) {
-            hasResponse = true;
+        switch (event) {
+          case PingResponse(time: final time) when !hasResponse:
+            if (time != null) {
+              final latency = time.inMicroseconds / 1000.0;
+              if (latency > 0 && latency < 2000) {
+                hasResponse = true;
+                timeoutTimer.cancel();
+                subscription?.cancel();
+                if (!completer.isCompleted) {
+                  completer.complete(latency);
+                }
+              }
+            }
+          case PingError(error: final error) when !hasResponse:
             timeoutTimer.cancel();
             subscription?.cancel();
             if (!completer.isCompleted) {
-              completer.complete(latency);
+              completer.completeError(Exception('Ping error: $error'));
             }
-          }
-        } else if (event.error != null && !hasResponse) {
-          timeoutTimer.cancel();
-          subscription?.cancel();
-          if (!completer.isCompleted) {
-            completer.completeError(Exception('Ping error: ${event.error}'));
-          }
+          case _:
+            break;
         }
       },
       onDone: () {

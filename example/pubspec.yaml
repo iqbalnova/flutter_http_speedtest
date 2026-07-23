@@ -22,19 +22,16 @@ dependencies:
   flutter_network_diagnostics:
     git:
       url: https://github.com/iqbalnova/flutter_network_diagnostics.git
-      ref: 0.0.1
+      ref: 0.0.4
   flutter_wifi_scan:
     git:
       url: https://github.com/iqbalnova/flutter_wifi_scan.git
       ref: 0.0.1
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   fl_chart: ^1.1.1
-  dart_ping_ios: ^4.0.2
   network_info_plus: ^7.0.0
-  dart_ping: ^9.0.1
+  dart_ping: ^10.0.1
   permission_handler: ^12.0.1
   syncfusion_flutter_gauges: ^32.1.25
   hive_ce: ^2.19.3

@@ -4,7 +4,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:dart_ping/dart_ping.dart';
-import 'package:dart_ping_ios/dart_ping_ios.dart';
 import 'package:flutter/foundation.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import '../models/lan_device.dart';
@@ -15,23 +14,10 @@ class LanScanner {
   bool _isInitialized = false;
   Isolate? _scanIsolate;
 
-  /// Initialize the scanner (required for iOS)
+  /// Initialize the scanner
   Future<void> initialize() async {
     if (_isInitialized) return;
-
-    if (Platform.isIOS) {
-      try {
-        // Register dart_ping_ios for iOS native ICMP support
-        DartPingIOS.register();
-        _isInitialized = true;
-        debugPrint('iOS ICMP support initialized');
-      } catch (e) {
-        debugPrint('Warning: Failed to initialize iOS ping support: $e');
-        _isInitialized = true;
-      }
-    } else {
-      _isInitialized = true;
-    }
+    _isInitialized = true;
   }
 
   /// Scan the local network for active devices
@@ -499,31 +485,36 @@ class LanScanner {
 
       subscription = ping.stream.listen(
         (event) {
-          if (event.response != null && event.response!.time != null) {
-            final latency = event.response!.time!.inMicroseconds;
+          switch (event) {
+            case PingResponse(time: final time):
+              if (time != null) {
+                final latency = time.inMicroseconds;
 
-            if (latency > 0 && latency < timeout.inMicroseconds) {
-              hasResponse = true;
-              if (!completer.isCompleted) {
+                if (latency > 0 && latency < timeout.inMicroseconds) {
+                  hasResponse = true;
+                  if (!completer.isCompleted) {
+                    timeoutTimer.cancel();
+                    subscription?.cancel();
+                    completer.complete(
+                      LanDevice(
+                        ip: ip,
+                        latencyMs: latency / 1000.0,
+                        reachable: true,
+                      ),
+                    );
+                  }
+                }
+              }
+            case PingError():
+              if (!completer.isCompleted && !hasResponse) {
                 timeoutTimer.cancel();
                 subscription?.cancel();
                 completer.complete(
-                  LanDevice(
-                    ip: ip,
-                    latencyMs: latency / 1000.0,
-                    reachable: true,
-                  ),
+                  LanDevice(ip: ip, latencyMs: 0.0, reachable: false),
                 );
               }
-            }
-          } else if (event.error != null) {
-            if (!completer.isCompleted && !hasResponse) {
-              timeoutTimer.cancel();
-              subscription?.cancel();
-              completer.complete(
-                LanDevice(ip: ip, latencyMs: 0.0, reachable: false),
-              );
-            }
+            case _:
+              break;
           }
         },
         onDone: () {

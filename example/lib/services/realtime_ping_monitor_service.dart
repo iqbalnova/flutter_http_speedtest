@@ -123,24 +123,29 @@ class RealtimePingMonitor {
         (event) {
           if (_isDisposed) return;
 
-          if (event.response != null && event.response!.time != null) {
-            final latency = event.response!.time!.inMicroseconds / 1000.0;
+          switch (event) {
+            case PingResponse(time: final time):
+              if (time != null) {
+                final latency = time.inMicroseconds / 1000.0;
 
-            if (latency > 0 && latency < timeout.inMilliseconds) {
-              hasResponse = true;
-              _handleSuccess(latency);
-              timeoutTimer.cancel();
+                if (latency > 0 && latency < timeout.inMilliseconds) {
+                  hasResponse = true;
+                  _handleSuccess(latency);
+                  timeoutTimer.cancel();
 
-              if (!completer.isCompleted) {
+                  if (!completer.isCompleted) {
+                    completer.complete();
+                  }
+                }
+              }
+            case PingError():
+              if (!hasResponse && !completer.isCompleted) {
+                _handleTimeout();
+                timeoutTimer.cancel();
                 completer.complete();
               }
-            }
-          } else if (event.error != null) {
-            if (!hasResponse && !completer.isCompleted) {
-              _handleTimeout();
-              timeoutTimer.cancel();
-              completer.complete();
-            }
+            case _:
+              break;
           }
         },
         onDone: () {

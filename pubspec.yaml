@@ -1,6 +1,6 @@
 name: flutter_http_speedtest
 description: "Flutter plugin for running speed tests against a server."
-version: 0.0.6
+version: 0.0.7
 homepage:
 
 environment:
@@ -8,8 +8,7 @@ environment:
   flutter: ">=3.3.0"
 
 dependencies:
-  dart_ping: ^9.0.1
-  dart_ping_ios: ^4.0.2
+  dart_ping: ^10.0.1
   flutter:
     sdk: flutter
   plugin_platform_interface: ^2.0.2
